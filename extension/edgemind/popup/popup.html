@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EdgeMind - Adaptive Test Intelligence</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Brand Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-logo-container" title="EdgeMind Brand">
+          <svg class="brand-logo" viewBox="0 0 128 128" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="hdr-e-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#38BDF8" />
+                <stop offset="50%" stop-color="#818CF8" />
+                <stop offset="100%" stop-color="#C084FC" />
+              </linearGradient>
+            </defs>
+            <path d="M 20 16 L 104 16 L 112 24 L 112 36 L 36 36 L 36 56 L 84 56 L 84 72 L 36 72 L 36 92 L 112 92 L 112 104 L 104 112 L 20 112 L 16 108 L 16 20 Z" fill="url(#hdr-e-grad)" />
+          </svg>
+        </div>
+        <div class="brand-info">
+          <h1 class="brand-title">Edge<span class="brand-title-accent">Mind</span></h1>
+          <span class="brand-subtitle">ADAPTIVE TEST INTELLIGENCE</span>
+        </div>
+      </div>
+      <div id="api-status" class="api-status connecting" title="Checking local EdgeMind API status...">
+        <span class="status-dot"></span>
+        <span id="api-status-text" class="status-label">Connecting</span>
+      </div>
+    </header>
+
+    <!-- Context Card -->
+    <section class="card context-card">
+      <div class="context-row">
+        <span class="context-label">Problem:</span>
+        <span id="page-title" class="context-value" title="Detecting active tab...">Detecting tab...</span>
+      </div>
+      <div class="context-row">
+        <span class="context-label">Language:</span>
+        <span id="lang-badge" class="badge badge-neutral">Detecting...</span>
+      </div>
+      <div class="context-row" id="row-constraints">
+        <span class="context-label">Constraints:</span>
+        <span id="constraints-badge" class="badge badge-subtle hidden">Constraints</span>
+      </div>
+    </section>
+
+    <!-- Baseline Input Samples Section (Automatic / Read-Only) -->
+    <section class="card samples-card">
+      <div class="samples-header" id="samples-toggle">
+        <div class="samples-title-group">
+          <svg class="samples-icon" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 3.5 H14 V12.5 A1 1 0 0 1 13 13.5 H3 A1 1 0 0 1 2 12.5 Z M2 8 H5.5 L7 10 H9 L10.5 8 H14" />
+          </svg>
+          <span class="samples-title">Baseline Input Samples</span>
+          <span id="samples-count-badge" class="badge badge-pill">0</span>
+        </div>
+        <button id="btn-toggle-samples" class="btn-icon-toggle" type="button" title="Toggle sample inputs view" aria-label="Toggle sample inputs">
+          <svg class="chevron-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6 L8 10 L12 6" />
+          </svg>
+        </button>
+      </div>
+      <div id="samples-body" class="samples-body">
+        <div class="samples-meta">
+          <div class="meta-row">
+            <span class="meta-label">Automatically Detected:</span>
+            <span id="samples-detected-badge" class="badge badge-neutral">NO</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Examples Found:</span>
+            <span id="samples-found-count" class="meta-value">0</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">Source:</span>
+            <span id="samples-source-value" class="meta-value">LeetCode Public Examples</span>
+          </div>
+        </div>
+        <div id="samples-list-container" class="samples-list-container">
+          <div id="samples-empty-msg" class="samples-empty-msg">No public examples detected on this problem page.</div>
+          <div id="samples-list" class="samples-list hidden"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Action Button -->
+    <section class="action-section">
+      <button id="btn-analyze" class="btn btn-primary" type="button">
+        <span class="btn-icon-wrapper">
+          <svg class="btn-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5 L9.5 6.5 L14.5 8 L9.5 9.5 L8 14.5 L6.5 9.5 L1.5 8 L6.5 6.5 Z" />
+          </svg>
+        </span>
+        <span class="btn-text">Analyze & Discover Edge Cases</span>
+      </button>
+    </section>
+
+    <!-- Loading State -->
+    <div id="loading-state" class="state-container hidden">
+      <div class="loading-radar">
+        <div class="radar-ring outer"></div>
+        <div class="radar-ring inner"></div>
+        <div class="radar-core"></div>
+      </div>
+      <p id="loading-message" class="state-message">Analyzing AST, evaluating domain partitions, and synthesizing edge-case candidates...</p>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="alert alert-error hidden" role="alert">
+      <div class="alert-icon">
+        <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2 L14 13 L2 13 Z M8 6 L8 9 M8 11.5 L8 11.75" />
+        </svg>
+      </div>
+      <div id="error-message" class="alert-content"></div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="empty-state" class="state-container info-state">
+      <div class="empty-icon-wrapper">
+        <svg class="empty-icon-svg" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="#4F9CFB" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9" stroke-opacity="0.3" />
+          <circle cx="12" cy="12" r="5" stroke-opacity="0.6" />
+          <circle cx="12" cy="12" r="1.5" fill="#4F9CFB" />
+          <path d="M12 3 V6 M12 18 V21 M3 12 H6 M18 12 H21" />
+        </svg>
+      </div>
+      <p class="state-title">Ready for Adaptive Test Intelligence</p>
+      <p class="state-hint">Open a LeetCode Python problem and click <strong>Analyze & Discover Edge Cases</strong> to inspect quality and generate targeted edge-case inputs.</p>
+    </div>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section hidden">
+      <!-- Intelligence Mode Banner -->
+      <div id="mode-banner" class="card mode-banner">
+        <div class="mode-header">
+          <div class="mode-header-left">
+            <span class="mode-beacon-dot"></span>
+            <span id="mode-title" class="mode-title">BASELINE-DRIVEN INTELLIGENCE</span>
+          </div>
+          <span id="mode-badge" class="badge badge-mode-baseline">Mode: Baseline-Driven</span>
+        </div>
+        <div class="mode-meta-grid">
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Public Examples:</span>
+            <span id="mode-examples-count" class="mode-meta-value">0</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Problem Context:</span>
+            <span id="mode-context-status" class="badge badge-subtle">Detected</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Constraints:</span>
+            <span id="mode-constraints-status" class="badge badge-subtle">Parsed</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Parameters Identified:</span>
+            <span id="mode-parameters-identified" class="mode-meta-value">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Navigation -->
+      <nav class="tabs-nav" role="tablist">
+        <button id="tab-btn-intel" class="tab-btn active" type="button" role="tab" aria-selected="true">
+          <svg class="tab-svg" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 1.5 L9.5 6.5 L14.5 8 L9.5 9.5 L8 14.5 L6.5 9.5 L1.5 8 L6.5 6.5 Z" />
+          </svg>
+          <span class="tab-label">Test Intelligence</span>
+          <span id="badge-gaps-count" class="tab-badge">0 Gaps</span>
+        </button>
+        <button id="tab-btn-code" class="tab-btn" type="button" role="tab" aria-selected="false">
+          <svg class="tab-svg" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2 L13.5 4.5 V8.5 C13.5 12 8 14.5 8 14.5 C8 14.5 2.5 12 2.5 8.5 V4.5 Z" />
+          </svg>
+          <span class="tab-label">Static Code Hygiene</span>
+          <span id="badge-code-score" class="tab-badge">--/100</span>
+        </button>
+      </nav>
+
+      <!-- Panel 1: Test Intelligence -->
+      <div id="panel-intel" class="tab-panel active" role="tabpanel">
+        <!-- Context-Based Mode Disclaimer Banner -->
+        <div id="context-mode-disclaimer" class="card context-disclaimer-card hidden">
+          <div class="context-disclaimer-icon">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="6" />
+              <line x1="8" y1="7" x2="8" y2="11" />
+              <circle cx="8" cy="4.5" r="0.75" fill="currentColor" />
+            </svg>
+          </div>
+          <p class="context-disclaimer-text">
+            These candidates are generated from available problem context. No public baseline examples were available. Expected outputs are unverified, and no generated inputs have been executed.
+          </p>
+        </div>
+
+        <!-- Summary Stats Row -->
+        <div class="stats-row">
+          <div class="stat-card">
+            <span id="stat-gaps" class="stat-number">0</span>
+            <span id="stat-gaps-label" class="stat-label">Coverage Gaps</span>
+          </div>
+          <div class="stat-card">
+            <span id="stat-candidates" class="stat-number">0</span>
+            <span class="stat-label">Ranked Candidates</span>
+          </div>
+          <div class="stat-card">
+            <span id="stat-dedup" class="stat-number">0</span>
+            <span class="stat-label">Deduplicated</span>
+          </div>
+        </div>
+
+        <!-- Coverage Gaps Sub-Section -->
+        <div class="sub-section">
+          <div class="sub-section-header">
+            <h2 id="gaps-section-title" class="sub-section-title">Identified Coverage Gaps</h2>
+            <span id="gaps-subhead" class="sub-section-count">0 Gaps</span>
+          </div>
+          <div id="gaps-list" class="items-list">
+            <!-- Dynamically populated via safe DOM APIs -->
+          </div>
+          <button id="btn-toggle-all-gaps" class="btn-view-all hidden" type="button">View All Gaps</button>
+          <div id="no-gaps-msg" class="card clean-card hidden">
+            <svg class="clean-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 8.5 L6.5 12 L13 4" />
+            </svg>
+            <span id="no-gaps-text">✨ No significant domain coverage gaps detected.</span>
+          </div>
+        </div>
+
+        <!-- Ranked Candidates Sub-Section -->
+        <div class="sub-section">
+          <div class="sub-section-header">
+            <h2 id="candidates-section-title" class="sub-section-title">Synthesized Edge-Case Candidates</h2>
+            <span id="candidates-subhead" class="sub-section-count">0 Candidates</span>
+          </div>
+          <div id="candidates-list" class="items-list">
+            <!-- Dynamically populated via safe DOM APIs -->
+          </div>
+          <button id="btn-toggle-all-candidates" class="btn-view-all hidden" type="button">View All Candidates</button>
+          <div id="no-candidates-msg" class="card clean-card hidden">
+            <svg class="clean-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="#64748B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="6" />
+              <line x1="8" y1="7" x2="8" y2="11" />
+              <circle cx="8" cy="4.5" r="0.75" fill="currentColor" />
+            </svg>
+            <span>ℹ️ No candidates generated for this context.</span>
+          </div>
+        </div>
+
+        <!-- Observed Input Patterns (Collapsible) -->
+        <div class="sub-section patterns-section">
+          <div class="patterns-header" id="patterns-toggle">
+            <h3 class="patterns-title">Observed Input Patterns</h3>
+            <button id="btn-toggle-patterns" class="btn-icon-toggle" type="button" aria-label="Toggle patterns">
+              <svg class="chevron-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6 L8 10 L12 6" />
+              </svg>
+            </button>
+          </div>
+          <div id="patterns-body" class="patterns-body hidden">
+            <div id="patterns-content" class="patterns-content">
+              <!-- Dynamically populated -->
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel 2: Static Code Hygiene & Diagnostics -->
+      <div id="panel-code" class="tab-panel hidden" role="tabpanel">
+        <!-- Static Code Hygiene Explanation Banner -->
+        <div class="card hygiene-banner">
+          <div class="hygiene-banner-title">Static Code Hygiene</div>
+          <p class="hygiene-banner-text">This score measures static code-analysis findings. It does not establish algorithmic correctness or guarantee that a solution passes platform tests.</p>
+        </div>
+        <!-- Score & Summary Banner -->
+        <div class="card summary-card">
+          <div class="score-container">
+            <div class="score-circle">
+              <span id="score-value" class="score-number">--</span>
+              <span class="score-max">/100</span>
+            </div>
+            <div class="summary-details">
+              <div id="overall-status-badge" class="badge badge-lg">--</div>
+              <div class="counts-row">
+                <span id="errors-count" class="count-item count-error">0 Errors</span>
+                <span class="count-divider">•</span>
+                <span id="warnings-count" class="count-item count-warning">0 Warnings</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section Status Pills -->
+          <div id="section-pills" class="section-pills-row">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+
+        <!-- Code Findings List -->
+        <div class="findings-container">
+          <h2 id="findings-title" class="findings-heading">Diagnostic Findings</h2>
+          <div id="findings-list" class="findings-list">
+            <!-- Dynamically populated -->
+          </div>
+          <div id="no-findings-message" class="card clean-card hidden">
+            <svg class="clean-icon" viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 8.5 L6.5 12 L13 4" />
+            </svg>
+            <span>✨ No code issues detected! Solution looks clean.</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer Disclaimer -->
+    <footer class="footer">
+      <div class="footer-brand-micro">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="#4F9CFB" stroke-width="1.8">
+          <path d="M3 4 H13 M3 8 H10 M3 12 H13 M3 4 V12" stroke-linecap="round" />
+        </svg>
+      </div>
+      <p class="disclaimer">
+        EdgeMind static analysis & test intelligence. Code execution is permanently disabled; expected outputs are unverified.
+      </p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

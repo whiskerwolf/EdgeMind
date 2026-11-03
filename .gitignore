@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Testing cache & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Workstation & IDE artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment variables & local secrets
+.env
+.env.*
+
+# EdgeMind logs and process files
+logs/
+*.pid
+*.log
+*.old
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# User requests, prompt notes, and non-project installers
+user_request*.txt
+DigitalSignerService*
+scratch/

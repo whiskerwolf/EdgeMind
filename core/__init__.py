@@ -1,0 +1,3 @@
+"""
+EdgeMind Core Package.
+"""

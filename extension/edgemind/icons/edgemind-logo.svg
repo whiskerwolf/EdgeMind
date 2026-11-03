@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <!-- Geometric E Gradient: Electric Blue to Radiant Violet -->
+    <linearGradient id="em-e-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#C084FC" />
+    </linearGradient>
+
+    <!-- Subtle Drop Shadow for depth -->
+    <filter id="subtle-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000000" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Geometric Letter E Brand Symbol -->
+  <path d="M 20 16 L 104 16 L 112 24 L 112 36 L 36 36 L 36 56 L 84 56 L 84 72 L 36 72 L 36 92 L 112 92 L 112 104 L 104 112 L 20 112 L 16 108 L 16 20 Z"
+        fill="url(#em-e-grad)" filter="url(#subtle-shadow)" />
+</svg>

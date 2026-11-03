@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "CodeDoctor",
+  "version": "1.0.0",
+  "description": "Deterministic static analysis and diagnostics for Python code on LeetCode.",
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "CodeDoctor"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://leetcode.com/*",
+        "https://*.leetcode.com/*"
+      ],
+      "js": [
+        "scripts/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

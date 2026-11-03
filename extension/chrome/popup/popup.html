@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeDoctor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <span class="brand-icon">🩺</span>
+        <h1 class="brand-title">CodeDoctor</h1>
+      </div>
+      <div id="api-status" class="api-status checking" title="Checking local API status...">
+        <span class="status-dot"></span>
+        <span id="api-status-text" class="status-label">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Context Card -->
+    <section class="card context-card">
+      <div class="context-row">
+        <span class="context-label">Page:</span>
+        <span id="page-title" class="context-value" title="Checking current tab...">Detecting tab...</span>
+      </div>
+      <div class="context-row">
+        <span class="context-label">Language:</span>
+        <span id="lang-badge" class="badge badge-neutral">Auto-Detect</span>
+      </div>
+    </section>
+
+    <!-- Main Trigger Button -->
+    <section class="action-section">
+      <button id="btn-analyze" class="btn btn-primary" type="button">
+        <span class="btn-icon">🔍</span>
+        <span class="btn-text">Analyze Code in Editor</span>
+      </button>
+    </section>
+
+    <!-- Loading State -->
+    <div id="loading-state" class="state-container hidden">
+      <div class="spinner"></div>
+      <p class="state-message">Extracting Python code and running static analysis...</p>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="error-banner" class="alert alert-error hidden" role="alert">
+      <div class="alert-icon">⚠️</div>
+      <div id="error-message" class="alert-content"></div>
+    </div>
+
+    <!-- Empty State Prompt -->
+    <div id="empty-state" class="state-container info-state">
+      <p class="state-hint">Open a LeetCode Python problem and click <strong>Analyze Code</strong> to inspect your solution statically.</p>
+    </div>
+
+    <!-- Results Section -->
+    <section id="results-section" class="results-section hidden">
+      <!-- Score & Overall Status Banner -->
+      <div class="card summary-card">
+        <div class="score-container">
+          <div class="score-circle">
+            <span id="score-value" class="score-number">--</span>
+            <span class="score-max">/100</span>
+          </div>
+          <div class="summary-details">
+            <div id="overall-status-badge" class="badge badge-lg">--</div>
+            <div class="counts-row">
+              <span id="errors-count" class="count-item count-error">0 Errors</span>
+              <span class="count-divider">•</span>
+              <span id="warnings-count" class="count-item count-warning">0 Warnings</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section Status Pills -->
+        <div id="section-pills" class="section-pills-row">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <!-- Findings List -->
+      <div class="findings-container">
+        <h2 id="findings-title" class="findings-heading">Diagnostic Findings</h2>
+        <div id="findings-list" class="findings-list">
+          <!-- Dynamically populated via safe DOM APIs -->
+        </div>
+        <div id="no-findings-message" class="card clean-code-card hidden">
+          <span class="clean-icon">✨</span>
+          <p class="clean-text">No issues detected! Your Python code looks clean.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Disclaimer Footer -->
+    <footer class="footer">
+      <p class="disclaimer">
+        Static analysis is heuristic and may produce false positives. Runtime execution is skipped.
+      </p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
