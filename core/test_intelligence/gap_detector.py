@@ -486,9 +486,13 @@ class CoverageGapEvaluator:
     def _check_ordering_gaps(
         self, name: str, param: ParameterProfile, spec: Optional[ConstraintSpec]
     ) -> List[CoverageGap]:
-        # Domain-aware rule: Suppress sequence ordering gaps (sorted, reversed)
-        # for string parameters unless string sorting is explicitly relevant.
+        # Domain-aware rule: Suppress sequence ordering gaps (sorted, reversed, unsorted)
+        # for string parameters and binary tree node structures.
         if "str" in param.types_observed and "list" not in param.types_observed:
+            return []
+        ctx = getattr(self.extractor, "context", None)
+        title_low = (ctx.title.lower() if ctx and ctx.title else "")
+        if name.lower() in ("root", "tree", "node", "treenode") or any(k in title_low for k in ("binary tree", "tree", "maxdepth", "maximum depth")):
             return []
 
         order = param.order

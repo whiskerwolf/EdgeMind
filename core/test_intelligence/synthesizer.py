@@ -309,7 +309,9 @@ class TargetedTestSynthesizer:
                     label=label,
                     rationale=rat,
                     target_gap=GapCategory.UPPER_CONSTRAINT_BOUND if "max-len" in cid else (
-                        GapCategory.LOWER_CONSTRAINT_BOUND if "singleton" in cid else GapCategory.UNSORTED_SEQUENCE
+                        GapCategory.LOWER_CONSTRAINT_BOUND if "singleton" in cid else (
+                            GapCategory.NESTED_BRACKETS if "balanced" in cid else GapCategory.BRACKET_PATTERN
+                        )
                     ),
                     relevance_score=0.90 if "max-len" in cid else 0.85,
                     is_boundary="max-len" in cid or "singleton" in cid,
@@ -394,14 +396,72 @@ class TargetedTestSynthesizer:
                     rationale=f"{rat} (actual nodes N={n_act}, serialized length L={s_len}, max depth D={m_dep}).",
                     target_gap=GapCategory.EMPTY_COLLECTION if len(tree_arr) == 0 else (
                         GapCategory.SINGLETON if len(tree_arr) == 1 else (
-                            GapCategory.UPPER_CONSTRAINT_BOUND if "max" in cid else GapCategory.UNSORTED_SEQUENCE
+                            GapCategory.UPPER_CONSTRAINT_BOUND if "max" in cid else GapCategory.TREE_STRUCTURE
                         )
                     ),
-                    relevance_score=0.92 if len(tree_arr) == 0 else (0.95 if "max" in cid else 0.88),
-                    is_boundary=len(tree_arr) <= 1 or "max" in cid,
+                    relevance_score=0.96 if len(tree_arr) == 0 else (0.97 if "max" in cid else 0.95),
+                    is_boundary=True,
                     is_performance="max" in cid,
                     classification=CandidateClassification.VALID.value,
                     classification_reason=f"Satisfies all supported supplied problem constraints (nodes N={n_act}, serialized length L={s_len}, depth D={m_dep}).",
+                )
+            )
+        return cases
+
+    def _is_sliding_window_substring_context(
+        self,
+        context: Optional[ProblemContext],
+        spec: Optional[ConstraintSpec],
+        base_inputs: Dict[str, Any],
+    ) -> bool:
+        """Identify if problem tests sliding-window substring properties."""
+        if context and context.title:
+            t = context.title.lower()
+            if "longest substring" in t or "substring without repeating" in t:
+                return True
+        return False
+
+    def _gen_sliding_window_patterns(
+        self,
+        base_inputs: Dict[str, Any],
+        spec: Optional[ConstraintSpec],
+        target_gaps: List[CoverageGap],
+        context: Optional[ProblemContext] = None,
+    ) -> List[TestCase]:
+        """Synthesize essential sliding-window string regression patterns (abba, dvdf, tmmzuxt)."""
+        str_param = None
+        for k, v in base_inputs.items():
+            if isinstance(v, str):
+                str_param = k
+                break
+        if not str_param:
+            str_param = "s"
+
+        patterns = [
+            ("gen-sw-abba", "Re-encountered character outside window (abba)", "abba", "Tests that re-encountered character prior to window start does not improperly move left pointer backward (abba)."),
+            ("gen-sw-dvdf", "Interleaved duplicate with contraction (dvdf)", "dvdf", "Tests window contraction and subsequent expansion across non-adjacent duplicate characters (dvdf)."),
+            ("gen-sw-tmmzuxt", "Adjacent duplicate followed by recurrence (tmmzuxt)", "tmmzuxt", "Tests sliding-window state reset on consecutive identical characters followed by non-adjacent recurrence (tmmzuxt)."),
+        ]
+
+        cases: List[TestCase] = []
+        for cid, label, val_str, rat in patterns:
+            inp = copy.deepcopy(base_inputs)
+            inp[str_param] = val_str
+            cases.append(
+                TestCase(
+                    id=cid,
+                    source=TestCaseSource.GENERATED_TEST,
+                    input_data=inp,
+                    expected_output=None,
+                    is_expected_output_verified=False,
+                    label=label,
+                    rationale=rat,
+                    target_gap=GapCategory.SLIDING_WINDOW_PATTERN,
+                    relevance_score=0.92,
+                    is_boundary=False,
+                    is_performance=False,
+                    classification=CandidateClassification.VALID.value,
+                    classification_reason="Satisfies all supported supplied problem constraints and character domain.",
                 )
             )
         return cases
@@ -499,10 +559,17 @@ class TargetedTestSynthesizer:
                 cand.classification = c_cls
                 cand.classification_reason = c_reason
 
-                sig = canonical_input_signature(cand.input_data)
-                if sig not in seen_signatures:
-                    seen_signatures.add(sig)
-                    candidates.append(cand)
+                # For binary tree context, suppress generic array candidates that duplicate structural tree forms
+                skip_generic = False
+                if self._is_binary_tree_context(ctx, spec, base_inputs):
+                    if any(cand.id.startswith(pfx) for pfx in ("gen-bound-max-len", "gen-empty", "gen-singleton", "gen-sorted", "gen-reversed", "gen-duplicate", "gen-identical")):
+                        skip_generic = True
+
+                if not skip_generic:
+                    sig = canonical_input_signature(cand.input_data)
+                    if sig not in seen_signatures:
+                        seen_signatures.add(sig)
+                        candidates.append(cand)
 
         # Domain-specific structural benchmark candidates
         structural_candidates: List[TestCase] = []
@@ -510,6 +577,8 @@ class TargetedTestSynthesizer:
             structural_candidates.extend(self._gen_bracket_patterns(base_inputs, spec, target_gaps, ctx))
         if self._is_binary_tree_context(ctx, spec, base_inputs):
             structural_candidates.extend(self._gen_tree_structural_variants(base_inputs, spec, target_gaps, ctx))
+        if self._is_sliding_window_substring_context(ctx, spec, base_inputs):
+            structural_candidates.extend(self._gen_sliding_window_patterns(base_inputs, spec, target_gaps, ctx))
 
 
 
@@ -1218,18 +1287,19 @@ class TargetedTestSynthesizer:
         else:
             return []
 
+        is_str = isinstance(orig, str)
         cand = TestCase(
             id=f"gen-duplicate-{name}",
             source=TestCaseSource.GENERATED_TEST,
             input_data=inputs,
             expected_output=None,
             is_expected_output_verified=False,
-            label=f"Duplicate elements in {name}",
+            label=f"Repeated-character pattern in {name}" if is_str else f"Duplicate elements in {name}",
             rationale=gap.rationale,
-            target_gap=GapCategory.DUPLICATE_ELEMENTS,
+            target_gap=GapCategory.REPEATED_PATTERN if is_str else GapCategory.DUPLICATE_ELEMENTS,
             relevance_score=gap.relevance_score,
             classification=CandidateClassification.CONSTRAINT_VALIDITY_UNKNOWN.value,
-            classification_reason="Generic duplicate mutation without recognized relational invariant; problem validity unknown.",
+            classification_reason="Repeated character mutation; problem validity unknown." if is_str else "Generic duplicate mutation without recognized relational invariant; problem validity unknown.",
         )
         if spec and (
             spec.min_length is not None

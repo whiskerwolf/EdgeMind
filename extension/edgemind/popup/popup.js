@@ -321,46 +321,102 @@
     }
   }
 
-  /**
-   * Verify whether EdgeMind API is reachable.
-   */
-  async function checkApiHealth() {
-    setApiStatus("connecting", "Connecting");
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+  let isStartupRequested = false;
+  let healthPollTimer = null;
 
+  /**
+   * Fast probe to verify if EdgeMind API is reachable and healthy.
+   */
+  async function probeHealth() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1200);
     try {
       const response = await fetch(`${API_BASE_URL}/health`, {
         method: "GET",
         signal: controller.signal
       });
       clearTimeout(timeoutId);
-
       if (response.ok) {
-        let isHealthy = false;
-        try {
-          const data = await response.json();
-          if (data && data.status === "healthy") {
-            isHealthy = true;
-          }
-        } catch {
-          // Response body was not JSON
-        }
-        if (isHealthy) {
-          setApiStatus("connected", "Connected");
-          return true;
-        } else {
-          setApiStatus("error", "Error");
-          return false;
-        }
+        const data = await response.json();
+        return Boolean(data && data.status === "healthy");
       }
-      setApiStatus("error", "Error");
       return false;
     } catch {
       clearTimeout(timeoutId);
-      setApiStatus("offline", "Offline");
       return false;
     }
+  }
+
+  /**
+   * Verify whether EdgeMind API is reachable.
+   * If offline, contacts background service worker to trigger Native Messaging startup,
+   * shows "Connecting", and polls /health automatically until online.
+   */
+  async function checkApiHealth(forceRetry = false) {
+    if (healthPollTimer) {
+      clearInterval(healthPollTimer);
+      healthPollTimer = null;
+    }
+
+    setApiStatus("connecting", "Connecting");
+
+    // 1. Direct health probe first
+    const isHealthy = await probeHealth();
+    if (isHealthy) {
+      setApiStatus("connected", "Connected");
+      isStartupRequested = false;
+      return true;
+    }
+
+    // 2. Request background service worker to trigger native host startup
+    if (!isStartupRequested || forceRetry) {
+      isStartupRequested = true;
+      try {
+        chrome.runtime.sendMessage({ action: "START_BACKEND" }, () => {
+          if (chrome.runtime.lastError) {
+            // Background worker not responding or native messaging host missing
+          }
+        });
+      } catch {
+        // Ignored
+      }
+    }
+
+    // 3. Poll /health automatically every 400ms (up to 12s)
+    let attempts = 0;
+    const maxAttempts = 30;
+    healthPollTimer = setInterval(async () => {
+      attempts++;
+      const healthy = await probeHealth();
+      if (healthy) {
+        clearInterval(healthPollTimer);
+        healthPollTimer = null;
+        isStartupRequested = false;
+        setApiStatus("connected", "Connected");
+        return;
+      }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(healthPollTimer);
+        healthPollTimer = null;
+        isStartupRequested = false;
+        if (chrome && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.get(["edgeMindBackend"], res => {
+            const info = res && res.edgeMindBackend;
+            if (info && info.backendStatus === "error") {
+              setApiStatus("error", "Error");
+              elApiStatus.title = info.statusMessage || "Startup error";
+            } else {
+              setApiStatus("offline", "Offline");
+            }
+          });
+        } else {
+          setApiStatus("offline", "Offline");
+        }
+      }
+    }, 400);
+
+    return false;
   }
 
   /**
@@ -1838,5 +1894,36 @@
   document.addEventListener("DOMContentLoaded", () => {
     checkApiHealth();
     inspectActiveTab();
+
+    // Listen for real-time background status updates
+    if (chrome && chrome.storage && chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes.edgeMindBackend) {
+          const newVal = changes.edgeMindBackend.newValue;
+          if (newVal) {
+            if (newVal.backendStatus === "connected") {
+              setApiStatus("connected", "Connected");
+            } else if (newVal.backendStatus === "connecting") {
+              setApiStatus("connecting", "Connecting");
+            } else if (newVal.backendStatus === "error") {
+              setApiStatus("error", "Error");
+              elApiStatus.title = newVal.statusMessage || "Error";
+            } else if (newVal.backendStatus === "offline") {
+              setApiStatus("offline", "Offline");
+              elApiStatus.title = newVal.statusMessage || "Offline";
+            }
+          }
+        }
+      });
+    }
+
+    // Allow user to click status indicator to retry connection manually
+    if (elApiStatus) {
+      elApiStatus.addEventListener("click", () => {
+        if (!elApiStatus.classList.contains("connected")) {
+          checkApiHealth(true);
+        }
+      });
+    }
   });
 })();

@@ -1,0 +1,9 @@
+{
+  "name": "com.edgemind.native_host",
+  "description": "EdgeMind Native Messaging Host for Backend Management",
+  "path": "C:\\Users\\HP\\Downloads\\Codedoctor\\scripts\\edgemind_native_host.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ajhfccooimcjfbablbbpicimdjolmndn/"
+  ]
+}

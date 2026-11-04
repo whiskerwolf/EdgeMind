@@ -322,7 +322,15 @@ class CandidateRanker:
                 selected_params.add(param_name)
             if chosen_cand.target_gap:
                 selected_gaps.add(chosen_cand.target_gap)
-            part_key = (param_name, chosen_cand.target_gap)
+            if chosen_cand.target_gap in (
+                GapCategory.TREE_STRUCTURE,
+                GapCategory.BRACKET_PATTERN,
+                GapCategory.NESTED_BRACKETS,
+                GapCategory.SLIDING_WINDOW_PATTERN,
+            ):
+                part_key = (param_name, chosen_cand.target_gap, chosen_cand.label)
+            else:
+                part_key = (param_name, chosen_cand.target_gap)
             selected_partitions[part_key] = selected_partitions.get(part_key, 0) + 1
 
             # Format rank explanation
@@ -426,7 +434,15 @@ class CandidateRanker:
             novel_reasons.append(f"new gap '{candidate.target_gap.value}'")
 
         # 5. Diversity / Redundant Partition Penalty
-        part_key = (param_name, candidate.target_gap)
+        if candidate.target_gap in (
+            GapCategory.TREE_STRUCTURE,
+            GapCategory.BRACKET_PATTERN,
+            GapCategory.NESTED_BRACKETS,
+            GapCategory.SLIDING_WINDOW_PATTERN,
+        ):
+            part_key = (param_name, candidate.target_gap, candidate.label)
+        else:
+            part_key = (param_name, candidate.target_gap)
         prior_count = selected_partitions.get(part_key, 0)
         div_penalty = prior_count * w.redundant_partition_penalty
 
@@ -488,6 +504,8 @@ class CandidateRanker:
             GapCategory.UPPER_CONSTRAINT_BOUND,
             GapCategory.LOWER_CONSTRAINT_BOUND,
             GapCategory.FAILURE_FAMILY_EXTRAPOLATION,
+            GapCategory.TREE_STRUCTURE,
+            GapCategory.SLIDING_WINDOW_PATTERN,
         ):
             return GapSeverity.HIGH
 
@@ -502,6 +520,9 @@ class CandidateRanker:
             GapCategory.UNSORTED_SEQUENCE,
             GapCategory.TARGET_NOT_FOUND,
             GapCategory.TARGET_AT_BOUNDARIES,
+            GapCategory.NESTED_BRACKETS,
+            GapCategory.BRACKET_PATTERN,
+            GapCategory.REPEATED_PATTERN,
         ):
             return GapSeverity.MEDIUM
 

@@ -135,6 +135,24 @@ Clicking the desktop shortcut:
 2. Polls `http://127.0.0.1:8000/health` until ready.
 3. Automatically opens Google Chrome with the active EdgeMind extension profile.
 
+### 3. Automatic Startup Triggered by Opening Chrome Profile 7
+
+Whenever you open Chrome Profile 7 normally, the EdgeMind extension triggers an automatic background startup using Chrome Native Messaging:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_edgemind_native_messaging.ps1
+```
+
+- **Zero Manual Effort**: Opening Chrome Profile 7 automatically starts the FastAPI backend silently in the background.
+- **Length-Prefixed Protocol**: Uses a compiled native C# executable (`scripts/edgemind_native_host.exe`) registered in `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host`.
+- **Duplicate Prevention**: If the backend is already online and healthy, it connects immediately without starting extra processes.
+- **Non-blocking UI**: The popup dynamically displays `Connecting` during startup and automatically transitions to `Connected` upon health check success.
+
+To uninstall native messaging registration:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_edgemind_native_messaging.ps1
+```
+
 ---
 
 ## HTTP API Documentation

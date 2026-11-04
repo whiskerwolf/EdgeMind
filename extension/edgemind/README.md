@@ -1,4 +1,4 @@
-# EdgeMind Chrome Extension
+﻿# EdgeMind Chrome Extension
 
 EdgeMind is an adaptive test-intelligence and static code analysis Chrome Manifest V3 extension. It maps input equivalence partitions, identifies coverage gaps, and synthesizes targeted edge-case candidates from the local EdgeMind API.
 
@@ -6,19 +6,19 @@ EdgeMind is an adaptive test-intelligence and static code analysis Chrome Manife
 
 ```text
 extension/edgemind/
-├── manifest.json
-├── README.md
-├── icons/
-│   ├── icon16.png
-│   ├── icon48.png
-│   └── icon128.png
-├── popup/
-│   ├── popup.html
-│   ├── popup.css
-│   └── popup.js
-└── scripts/
-    ├── content.js
-    └── extractor.js
+â”œâ”€â”€ manifest.json
+â”œâ”€â”€ README.md
+â”œâ”€â”€ icons/
+â”‚   â”œâ”€â”€ icon16.png
+â”‚   â”œâ”€â”€ icon48.png
+â”‚   â””â”€â”€ icon128.png
+â”œâ”€â”€ popup/
+â”‚   â”œâ”€â”€ popup.html
+â”‚   â”œâ”€â”€ popup.css
+â”‚   â””â”€â”€ popup.js
+â””â”€â”€ scripts/
+    â”œâ”€â”€ content.js
+    â””â”€â”€ extractor.js
 ```
 
 ## Running the EdgeMind Backend
@@ -53,7 +53,7 @@ Expected output:
 
 1. Navigate to any LeetCode problem page (e.g. `https://leetcode.com/problems/two-sum/`).
 2. Ensure the problem editor language is set to **Python** or **Python3**.
-3. Click the **EdgeMind** extension icon (`⚡`).
+3. Click the **EdgeMind** extension icon (`âš¡`).
 4. Review the detected problem title and baseline input samples.
 5. Click **Analyze & Discover Edge Cases**.
 6. EdgeMind will display:
