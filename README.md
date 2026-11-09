@@ -253,7 +253,114 @@ Analyzes code against problem context and baseline test cases to discover test c
 
 ---
 
-## EdgeMind Chrome Extension
+## Persistence Architecture (PostgreSQL & MongoDB)
+
+EdgeMind employs a dual-database persistence design separating relational metadata and authorization from detailed analysis documents:
+
+| Concern | Primary Store | Storage Scope |
+|---|---|---|
+| **Users & Authentication** | PostgreSQL (`asyncpg` + SQLAlchemy 2.0) | User accounts, Argon2id password hashes, JWT refresh token families, RBAC roles (`user`, `admin`). |
+| **Projects & Tenancy** | PostgreSQL | Multi-tenant projects, user ownership links, creation/update timestamps. |
+| **Problem Catalog** | PostgreSQL | LeetCode problem slugs, titles, and difficulty metadata. |
+| **Analysis Metadata** | PostgreSQL | `analysis_sessions` table tracking timestamps, status, project/problem/user links, and `report_storage_status` (`PENDING`, `STORED`, `FAILED`, `NOT_CONFIGURED`). |
+| **Analysis Reports & Artifacts** | MongoDB (`pymongo.AsyncMongoClient`) | `analysis_reports` collection storing full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics. |
+
+### MongoDB Document Schema (`analysis_reports`)
+
+Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0"`:
+
+```json
+{
+  "_id": "ObjectId(...)",
+  "schema_version": "1.0.0",
+  "analysis_session_id": "UUID (matches PostgreSQL analysis_sessions.id)",
+  "project_id": "UUID (optional, tenant isolation)",
+  "user_id": "UUID (optional, tenant isolation)",
+  "problem_slug": "string",
+  "created_at": "ISODate(...)",
+  "storage_metadata": {
+    "engine_version": "1.0.0",
+    "analysis_mode": "BASELINE_DRIVEN | CONTEXT_BASED",
+    "static_only": true,
+    "stored_at": "ISODate(...)"
+  },
+  "identified_parameters": [...],
+  "parsed_constraints": [...],
+  "coverage_gaps": [...],
+  "generated_candidates": [
+    {
+      "candidate_id": "string",
+      "tag": "GENERATED_TEST",
+      "input_data": {...},
+      "expected_output": null,
+      "is_expected_output_verified": false,
+      "target_gaps": [...],
+      "rationale": "string",
+      "severity": "CRITICAL | HIGH | MEDIUM | LOW"
+    }
+  ],
+  "code_analysis": {
+    "syntax_valid": true,
+    "complexity_score": 1,
+    "code_smells": []
+  },
+  "provenance": {...}
+}
+```
+
+> [!IMPORTANT]
+> **Safety Invariants**:
+> - Generated candidates strictly enforce `expected_output = null` and `is_expected_output_verified = false`. EdgeMind never executes code and never fabricates verified outputs.
+> - Source code, LeetCode DOM trees, cookies, and bearer tokens are strictly scrubbed prior to MongoDB persistence.
+
+---
+
+### Detailed Analysis & Report Endpoints
+
+#### 1. Retrieve Complete Analysis Report
+- **Method**: `GET`
+- **Path**: `/api/v1/analyses/{analysis_id}/report`
+- **Auth**: Bearer Token required for private sessions. Returns the full MongoDB report document.
+
+#### 2. Retrieve Synthesized Test Candidates
+- **Method**: `GET`
+- **Path**: `/api/v1/analyses/{analysis_id}/candidates`
+- **Auth**: Bearer Token required for private sessions. Returns the candidate array, count, and safety warnings.
+
+#### 3. Retrieve Coverage Gaps
+- **Method**: `GET`
+- **Path**: `/api/v1/analyses/{analysis_id}/coverage-gaps`
+- **Auth**: Bearer Token required for private sessions. Returns categorized boundary vulnerabilities.
+
+#### 4. List Paginated Reports
+- **Method**: `GET`
+- **Path**: `/api/v1/reports?skip=0&limit=20`
+- **Auth**: Bearer Token required. Normal users only view reports they own; admin users can inspect reports across tenants.
+
+#### 5. Delete Analysis Document
+- **Method**: `DELETE`
+- **Path**: `/api/v1/analyses/{analysis_id}/report`
+- **Auth**: Bearer Token required. Safely removes the MongoDB document and updates the PostgreSQL session's `report_storage_status` to `"FAILED"`, preserving audit history.
+
+---
+
+## Docker Compose Infrastructure
+
+A production-aligned local development environment is configured via `docker-compose.yml`:
+
+```powershell
+# Start PostgreSQL 16 and MongoDB 7 in detached mode
+docker compose up -d
+
+# Check service health
+docker compose ps
+```
+
+- **PostgreSQL**: Accessible at `localhost:5432` (`edgemind` database).
+- **MongoDB**: Accessible at `localhost:27017` (`edgemind` database).
+
+When Docker is unavailable, EdgeMind gracefully operates with local SQLite and falls back safely if MongoDB is offline (`report_storage_status = "FAILED"` or `"NOT_CONFIGURED"`), ensuring the Chrome extension and core intelligence engine are never blocked.
+
 
 The unpacked extension is located in `extension/edgemind/`.
 
@@ -305,4 +412,11 @@ Run specific test modules:
 
 # Adaptive test intelligence engine tests
 .\.venv\Scripts\python.exe -m pytest tests/test_gap_detector.py tests/test_synthesizer.py tests/test_ranker.py -v
+
+# Database persistence & multi-tenancy tests
+.\.venv\Scripts\python.exe -m pytest tests/test_database_persistence.py tests/test_auth_multi_tenancy.py -v
+
+# MongoDB document store integration tests
+.\.venv\Scripts\python.exe -m pytest tests/test_mongodb_integration.py -v
+
 ```

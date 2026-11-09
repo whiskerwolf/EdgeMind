@@ -101,10 +101,29 @@ class Settings(BaseSettings):
     admin_bootstrap_email: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin email")
     admin_bootstrap_password: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin password")
 
+    # Document Store Settings (MongoDB / PyMongo AsyncMongoClient - Phase 4)
+    mongodb_url: Optional[str] = Field(
+        default=None,
+        description="Async MongoDB connection URL (e.g. mongodb://127.0.0.1:27017 or mongodb://user:pass@localhost:27017)",
+    )
+    mongodb_database: str = Field(
+        default="edgemind",
+        description="MongoDB database name for analysis report document store",
+    )
+    mongodb_server_selection_timeout_ms: int = Field(
+        default=2000,
+        description="Timeout for MongoDB server selection in milliseconds",
+    )
+
     @property
     def is_database_enabled(self) -> bool:
         """Check if a database URL is configured and non-empty."""
         return bool(self.database_url and self.database_url.strip())
+
+    @property
+    def is_mongodb_enabled(self) -> bool:
+        """Check if a MongoDB connection URL is configured and non-empty."""
+        return bool(self.mongodb_url and self.mongodb_url.strip())
 
     def get_jwt_secret_key(self) -> str:
         """

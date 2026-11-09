@@ -73,6 +73,13 @@ class AnalysisSession(Base, TimestampMixin):
         nullable=False,
         default=0.0,
     )
+    report_storage_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="NOT_CONFIGURED",
+        server_default="NOT_CONFIGURED",
+        index=True,
+    )
 
     # Relationships
     user: Mapped[Optional["User"]] = relationship(
@@ -101,6 +108,7 @@ class AnalysisSession(Base, TimestampMixin):
             "gaps_detected": self.gaps_detected,
             "candidates_generated": self.candidates_generated,
             "duration_ms": self.duration_ms,
+            "report_storage_status": self.report_storage_status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

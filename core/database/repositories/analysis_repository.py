@@ -30,6 +30,7 @@ class AnalysisRepository:
         project_id: Optional[uuid.UUID] = None,
         problem_id: Optional[uuid.UUID] = None,
         user_id: Optional[uuid.UUID] = None,
+        report_storage_status: str = "NOT_CONFIGURED",
     ) -> AnalysisSession:
         """Create and persist a new AnalysisSession record with optional user ownership."""
         session_record = AnalysisSession(
@@ -42,6 +43,7 @@ class AnalysisRepository:
             project_id=project_id,
             problem_id=problem_id,
             user_id=user_id,
+            report_storage_status=report_storage_status,
         )
         self.session.add(session_record)
         await self.session.flush()
@@ -66,6 +68,18 @@ class AnalysisRepository:
 
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def update_storage_status(
+        self,
+        analysis_id: uuid.UUID,
+        status: str,
+    ) -> Optional[AnalysisSession]:
+        """Update report_storage_status on an AnalysisSession record."""
+        session_rec = await self.get_by_id(analysis_id)
+        if session_rec:
+            session_rec.report_storage_status = status
+            await self.session.flush()
+        return session_rec
 
     async def list_all(
         self,

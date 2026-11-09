@@ -210,6 +210,7 @@ class AnalysisSessionCreate(BaseModel):
     duration_ms: Optional[float] = Field(default=0.0, ge=0.0)
     project_id: Optional[str] = Field(default=None, description="Optional Project UUID")
     problem_id: Optional[str] = Field(default=None, description="Optional Problem UUID")
+    report_storage_status: Optional[str] = Field(default="NOT_CONFIGURED")
 
 
 class AnalysisSessionResponse(BaseModel):
@@ -226,6 +227,7 @@ class AnalysisSessionResponse(BaseModel):
     gaps_detected: int
     candidates_generated: int
     duration_ms: float
+    report_storage_status: Optional[str] = "NOT_CONFIGURED"
     created_at: Optional[str] = None
 
 

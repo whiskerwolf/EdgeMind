@@ -9,10 +9,10 @@ Endpoints:
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth.dependencies import get_current_active_user
@@ -21,6 +21,8 @@ from core.database.models import User
 from core.database.repositories.analysis_repository import AnalysisRepository
 from core.database.repositories.problem_repository import ProblemRepository
 from core.database.repositories.project_repository import ProjectRepository
+from core.mongodb.connection import get_mongo_db
+from core.mongodb.repositories import ReportRepository
 from core.schemas import (
     AnalysisReportItemResponse,
     AnalysisSessionCreate,
@@ -222,4 +224,220 @@ async def create_analysis_session(
         user_id=current_user.id,
     )
     return session_rec.to_dict()
+
+
+@router.get(
+    "/{analysis_id}/report",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Complete detailed analysis report from document store"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        404: {"model": ErrorResponse, "description": "Analysis session or report not found"},
+        422: {"model": ErrorResponse, "description": "Invalid UUID format"},
+        503: {"model": ErrorResponse, "description": "Document storage unavailable"},
+    },
+)
+async def get_detailed_report(
+    analysis_id: uuid.UUID,
+    analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Retrieve the full detailed analysis report document from MongoDB.
+    Verifies ownership via PostgreSQL before accessing MongoDB.
+    """
+    session_rec = await analysis_repo.get_by_id(analysis_id)
+    if not session_rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    # Ownership isolation check
+    if current_user.role != "admin" and session_rec.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    mongo_db = get_mongo_db()
+    if mongo_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+
+    report_repo = ReportRepository(mongo_db)
+    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    if not report_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Detailed report for analysis session '{analysis_id}' was not found.",
+        )
+
+    return report_doc
+
+
+@router.get(
+    "/{analysis_id}/candidates",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Generated test candidates and classification summaries"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        404: {"model": ErrorResponse, "description": "Analysis session or report not found"},
+        422: {"model": ErrorResponse, "description": "Invalid UUID format"},
+        503: {"model": ErrorResponse, "description": "Document storage unavailable"},
+    },
+)
+async def get_analysis_candidates(
+    analysis_id: uuid.UUID,
+    analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Retrieve generated test candidates from MongoDB for a specific analysis session.
+    Verifies ownership via PostgreSQL before accessing MongoDB.
+    """
+    session_rec = await analysis_repo.get_by_id(analysis_id)
+    if not session_rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    if current_user.role != "admin" and session_rec.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    mongo_db = get_mongo_db()
+    if mongo_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+
+    report_repo = ReportRepository(mongo_db)
+    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    if not report_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Detailed report for analysis session '{analysis_id}' was not found.",
+        )
+
+    return {
+        "analysis_session_id": str(analysis_id),
+        "candidates": report_doc.get("generated_candidates", []),
+        "candidate_classifications": report_doc.get("candidate_classifications", {}),
+        "total_candidates": len(report_doc.get("generated_candidates", [])),
+        "provenance": report_doc.get("analysis_metadata", {}).get("provenance", {}),
+        "limitations": report_doc.get("explanations", {}).get("limitations", []),
+    }
+
+
+@router.get(
+    "/{analysis_id}/coverage-gaps",
+    response_model=Dict[str, Any],
+    status_code=status.HTTP_200_OK,
+    responses={
+        200: {"description": "Constraint and coverage gap information"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        404: {"model": ErrorResponse, "description": "Analysis session or report not found"},
+        422: {"model": ErrorResponse, "description": "Invalid UUID format"},
+        503: {"model": ErrorResponse, "description": "Document storage unavailable"},
+    },
+)
+async def get_analysis_coverage_gaps(
+    analysis_id: uuid.UUID,
+    analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Retrieve constraint and coverage gap details from MongoDB for an analysis session.
+    Verifies ownership via PostgreSQL before accessing MongoDB.
+    """
+    session_rec = await analysis_repo.get_by_id(analysis_id)
+    if not session_rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    if current_user.role != "admin" and session_rec.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    mongo_db = get_mongo_db()
+    if mongo_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+
+    report_repo = ReportRepository(mongo_db)
+    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    if not report_doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Detailed report for analysis session '{analysis_id}' was not found.",
+        )
+
+    return {
+        "analysis_session_id": str(analysis_id),
+        "coverage_gaps": report_doc.get("coverage_gaps", []),
+        "total_gaps": len(report_doc.get("coverage_gaps", [])),
+        "constraints": report_doc.get("constraints", {}),
+        "unresolved_constraints": report_doc.get("explanations", {}).get("unresolved_constraints", []),
+    }
+
+
+@router.delete(
+    "/{analysis_id}/report",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        204: {"description": "Detailed report deleted from MongoDB, PostgreSQL session preserved"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        404: {"model": ErrorResponse, "description": "Analysis session not found"},
+        422: {"model": ErrorResponse, "description": "Invalid UUID format"},
+        503: {"model": ErrorResponse, "description": "Document storage unavailable"},
+    },
+)
+async def delete_analysis_report(
+    analysis_id: uuid.UUID,
+    analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Delete the detailed report document from MongoDB while preserving PostgreSQL session metadata.
+    Updates report_storage_status to 'NOT_CONFIGURED'.
+    """
+    session_rec = await analysis_repo.get_by_id(analysis_id)
+    if not session_rec:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    if current_user.role != "admin" and session_rec.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
+
+    mongo_db = get_mongo_db()
+    if mongo_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+
+    report_repo = ReportRepository(mongo_db)
+    await report_repo.delete_report(str(analysis_id))
+    await analysis_repo.update_storage_status(analysis_id, "NOT_CONFIGURED")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
