@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 import uuid
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
