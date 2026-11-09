@@ -702,18 +702,179 @@ def test_alembic_002_migration_upgrade_and_downgrade(tmp_path):
 
 
 # -----------------------------------------------------------------------------
-# 20. Backward Compatibility for Existing Unauthenticated CRUD
+# 20. Anonymous Resource Access Rejection (Regression Tests)
 # -----------------------------------------------------------------------------
 
-def test_existing_crud_backward_compatibility(client: TestClient):
-    """Verify existing unauthenticated project CRUD operations still function without errors."""
-    create_res = client.post("/api/v1/projects", json={"name": "Legacy Unauthenticated Project"})
-    assert create_res.status_code == 201
-    proj_id = create_res.json()["id"]
+def test_anonymous_project_creation_rejected(client: TestClient):
+    """Verify unauthenticated requests to create projects receive HTTP 401 Unauthorized."""
+    res = client.post("/api/v1/projects", json={"name": "Anonymous Infiltrator Project"})
+    assert res.status_code == 401
+    assert "not authenticated" in res.json().get("detail", "").lower() or "credentials" in res.json().get("detail", "").lower()
 
-    get_res = client.get(f"/api/v1/projects/{proj_id}")
-    assert get_res.status_code == 200
 
-    del_res = client.delete(f"/api/v1/projects/{proj_id}")
-    assert del_res.status_code == 204
+def test_anonymous_project_retrieval_rejected(client: TestClient):
+    """Verify all project read and mutation endpoints reject unauthenticated access with HTTP 401."""
+    random_id = uuid.uuid4()
+    assert client.get("/api/v1/projects").status_code == 401
+    assert client.get("/api/v1/projects/statistics").status_code == 401
+    assert client.get(f"/api/v1/projects/{random_id}").status_code == 401
+    assert client.patch(f"/api/v1/projects/{random_id}", json={"name": "Hacked"}).status_code == 401
+    assert client.delete(f"/api/v1/projects/{random_id}").status_code == 401
+
+
+def test_anonymous_analysis_history_access_rejected(client: TestClient):
+    """Verify all analysis history, report, and recording endpoints reject unauthenticated access with HTTP 401."""
+    random_id = uuid.uuid4()
+    assert client.get("/api/v1/analyses").status_code == 401
+    assert client.get("/api/v1/analyses/report").status_code == 401
+    assert client.get(f"/api/v1/analyses/{random_id}").status_code == 401
+    assert client.post("/api/v1/analyses", json={"analysis_mode": "BASELINE_DRIVEN"}).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_admin_access_to_cross_user_resources(client: TestClient, async_session: AsyncSession):
+    """Verify an admin can view and access projects and analysis sessions across all tenants."""
+    from core.auth.service import AuthService
+
+    auth_svc = AuthService(async_session)
+    user_a = await auth_svc.register_user("tenant_a@example.com", "Password123!@#", "Tenant Alpha")
+    user_b = await auth_svc.register_user("tenant_b@example.com", "Password123!@#", "Tenant Beta")
+    admin_u = await auth_svc.register_user("sysadmin@example.com", "Password123!@#", "System Admin")
+    admin_u.role = "admin"
+    await async_session.commit()
+
+    tok_a = create_access_token(user_a.id, role="user")
+    tok_b = create_access_token(user_b.id, role="user")
+    tok_admin = create_access_token(admin_u.id, role="admin")
+
+    # User A creates a project
+    res_a = client.post(
+        "/api/v1/projects",
+        json={"name": "Alpha Private Repo"},
+        headers={"Authorization": f"Bearer {tok_a}"},
+    )
+    assert res_a.status_code == 201
+    proj_a_id = res_a.json()["id"]
+
+    # User B creates a project
+    res_b = client.post(
+        "/api/v1/projects",
+        json={"name": "Beta Private Repo"},
+        headers={"Authorization": f"Bearer {tok_b}"},
+    )
+    assert res_b.status_code == 201
+    proj_b_id = res_b.json()["id"]
+
+    # User A records an analysis session
+    sess_a = client.post(
+        "/api/v1/analyses",
+        json={"analysis_mode": "BASELINE_DRIVEN", "project_id": proj_a_id},
+        headers={"Authorization": f"Bearer {tok_a}"},
+    )
+    assert sess_a.status_code == 201
+    sess_a_id = sess_a.json()["id"]
+
+    # Admin lists projects -> sees both Project A and Project B
+    admin_proj_list = client.get("/api/v1/projects", headers={"Authorization": f"Bearer {tok_admin}"})
+    assert admin_proj_list.status_code == 200
+    listed_ids = [p["id"] for p in admin_proj_list.json()]
+    assert proj_a_id in listed_ids
+    assert proj_b_id in listed_ids
+
+    # Admin accesses Project A directly -> 200 OK
+    assert client.get(f"/api/v1/projects/{proj_a_id}", headers={"Authorization": f"Bearer {tok_admin}"}).status_code == 200
+
+    # Admin retrieves project statistics -> sees both
+    admin_stats = client.get("/api/v1/projects/statistics", headers={"Authorization": f"Bearer {tok_admin}"})
+    assert admin_stats.status_code == 200
+    stats_ids = [p["id"] for p in admin_stats.json()]
+    assert proj_a_id in stats_ids
+    assert proj_b_id in stats_ids
+
+    # Admin lists analysis sessions -> sees User A's session
+    admin_sess_list = client.get("/api/v1/analyses", headers={"Authorization": f"Bearer {tok_admin}"})
+    assert admin_sess_list.status_code == 200
+    assert any(s["id"] == sess_a_id for s in admin_sess_list.json())
+
+    # Admin retrieves Analysis A directly -> 200 OK
+    assert client.get(f"/api/v1/analyses/{sess_a_id}", headers={"Authorization": f"Bearer {tok_admin}"}).status_code == 200
+
+    # Admin retrieves analysis history report -> returns sessions across tenants
+    admin_report = client.get("/api/v1/analyses/report", headers={"Authorization": f"Bearer {tok_admin}"})
+    assert admin_report.status_code == 200
+    assert any(r["id"] == sess_a_id for r in admin_report.json())
+
+
+def test_authenticated_analysis_validates_project_ownership_and_records_user(client: TestClient):
+    """
+    Verify authenticated analysis requests validate project ownership (404 on cross-user attempt)
+    and associate the session with the authenticated user.
+    """
+    client.post("/api/v1/auth/register", json={
+        "email": "owner_eng@example.com",
+        "password": "Password123!@#",
+        "full_name": "Project Owner",
+    })
+    tok_owner = client.post("/api/v1/auth/login", json={
+        "email": "owner_eng@example.com",
+        "password": "Password123!@#",
+    }).json()["access_token"]
+
+    client.post("/api/v1/auth/register", json={
+        "email": "intruder_eng@example.com",
+        "password": "Password123!@#",
+        "full_name": "Intruder Engineer",
+    })
+    tok_intruder = client.post("/api/v1/auth/login", json={
+        "email": "intruder_eng@example.com",
+        "password": "Password123!@#",
+    }).json()["access_token"]
+
+    # Owner creates Project
+    proj_res = client.post(
+        "/api/v1/projects",
+        json={"name": "Owner Secure Project"},
+        headers={"Authorization": f"Bearer {tok_owner}"},
+    )
+    assert proj_res.status_code == 201
+    proj_id = proj_res.json()["id"]
+
+    analyze_payload = {
+        "code": "def solve(n: int) -> int:\n    return n * 2\n",
+        "project_id": proj_id,
+        "test_cases": [{"input_data": {"n": 5}}],
+        "static_only": True,
+    }
+
+    # 1. Anonymous user attempts to analyze and attach to Owner's project -> 404
+    anon_res = client.post("/api/v1/edgemind/analyze", json=analyze_payload)
+    assert anon_res.status_code == 404
+    assert "not found" in anon_res.json()["detail"].lower()
+
+    # 2. Intruder user attempts to analyze and attach to Owner's project -> 404
+    intruder_res = client.post(
+        "/api/v1/edgemind/analyze",
+        json=analyze_payload,
+        headers={"Authorization": f"Bearer {tok_intruder}"},
+    )
+    assert intruder_res.status_code == 404
+    assert "not found" in intruder_res.json()["detail"].lower()
+
+    # 3. Legitimate Owner analyzes and attaches to their own project -> 200 OK
+    owner_res = client.post(
+        "/api/v1/edgemind/analyze",
+        json=analyze_payload,
+        headers={"Authorization": f"Bearer {tok_owner}"},
+    )
+    assert owner_res.status_code == 200
+    sess_id = owner_res.json()["analysis_session_id"]
+    assert sess_id is not None
+
+    # Owner can fetch this session
+    fetch_res = client.get(f"/api/v1/analyses/{sess_id}", headers={"Authorization": f"Bearer {tok_owner}"})
+    assert fetch_res.status_code == 200
+    assert fetch_res.json()["project_id"] == proj_id
+
+    # Intruder receives 404 attempting to view Owner's session
+    assert client.get(f"/api/v1/analyses/{sess_id}", headers={"Authorization": f"Bearer {tok_intruder}"}).status_code == 404
 

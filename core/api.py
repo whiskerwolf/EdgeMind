@@ -434,20 +434,19 @@ async def edgemind_analyze_endpoint(
                         },
                     )
 
-                # Ownership isolation check: cannot attach to another user's project
-                if existing_proj.owner_user_id is not None:
-                    if not current_user or (
-                        current_user.id != existing_proj.owner_user_id
-                        and current_user.role != "admin"
-                    ):
-                        return JSONResponse(
-                            status_code=404,
-                            content={
-                                "error": "Not Found",
-                                "detail": f"Referenced project with ID '{project_uuid}' not found.",
-                                "request_id": request_id,
-                            },
-                        )
+                # Ownership isolation check: cannot attach to another user's project or unowned project anonymously
+                if not current_user or (
+                    current_user.role != "admin"
+                    and existing_proj.owner_user_id != current_user.id
+                ):
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": "Not Found",
+                            "detail": f"Referenced project with ID '{project_uuid}' not found.",
+                            "request_id": request_id,
+                        },
+                    )
             except HTTPException:
                 raise
             except Exception as db_check_err:

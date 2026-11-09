@@ -16,7 +16,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.auth.dependencies import get_optional_current_user
+from core.auth.dependencies import get_current_active_user
 from core.database.connection import get_db
 from core.database.models import User
 from core.database.repositories.project_repository import ProjectRepository
@@ -47,6 +47,7 @@ def get_project_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ProjectRep
     status_code=status.HTTP_201_CREATED,
     responses={
         201: {"model": ProjectResponse, "description": "Project successfully created"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         422: {"model": ErrorResponse, "description": "Validation error"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
@@ -54,17 +55,16 @@ def get_project_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ProjectRep
 async def create_project(
     payload: ProjectCreate,
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Create a new Project record, assigning the authenticated user as owner."""
-    owner_id = current_user.id if current_user else None
     project = await repo.create(
         name=payload.name,
         description=payload.description,
         language=payload.language or "python",
         technology_stack=payload.technology_stack or {},
         status=payload.status or "active",
-        owner_user_id=owner_id,
+        owner_user_id=current_user.id,
     )
     return project.to_dict()
 
@@ -75,6 +75,7 @@ async def create_project(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": List[ProjectWithStatsResponse], "description": "Projects with joined session counts"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
 )
@@ -82,17 +83,14 @@ async def get_projects_statistics(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     SQL JOIN Demonstration 1:
     Retrieve projects along with aggregated session counts in a single query.
     Enforces tenant isolation for regular users; administrators can view across tenants.
     """
-    owner_filter = None
-    if current_user and current_user.role != "admin":
-        owner_filter = current_user.id
-
+    owner_filter = None if current_user.role == "admin" else current_user.id
     return await repo.get_projects_with_session_counts(skip=skip, limit=limit, owner_user_id=owner_filter)
 
 
@@ -102,6 +100,7 @@ async def get_projects_statistics(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": List[ProjectResponse], "description": "List of projects"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
 )
@@ -111,13 +110,10 @@ async def list_projects(
     status_filter: Optional[str] = Query(None, alias="status"),
     language: Optional[str] = None,
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """List projects with pagination and filters. Enforces user ownership isolation."""
-    owner_filter = None
-    if current_user and current_user.role != "admin":
-        owner_filter = current_user.id
-
+    owner_filter = None if current_user.role == "admin" else current_user.id
     projects = await repo.list_all(
         skip=skip,
         limit=limit,
@@ -134,6 +130,7 @@ async def list_projects(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": ProjectResponse, "description": "Project details"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Project not found"},
         422: {"model": ErrorResponse, "description": "Invalid UUID format"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
@@ -142,7 +139,7 @@ async def list_projects(
 async def get_project(
     project_id: uuid.UUID,
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Get project details by UUID with ownership verification (returns 404 on cross-user access)."""
     project = await repo.get_by_id(project_id)
@@ -152,13 +149,12 @@ async def get_project(
             detail=f"Project with ID '{project_id}' not found.",
         )
 
-    # Ownership isolation check
-    if project.owner_user_id is not None:
-        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project with ID '{project_id}' not found.",
-            )
+    # Ownership isolation check: ordinary users can only access their own projects
+    if current_user.role != "admin" and project.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found.",
+        )
 
     return project.to_dict()
 
@@ -169,6 +165,7 @@ async def get_project(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": ProjectResponse, "description": "Project updated"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Project not found"},
         422: {"model": ErrorResponse, "description": "Invalid request data"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
@@ -178,7 +175,7 @@ async def update_project(
     project_id: uuid.UUID,
     payload: ProjectUpdate,
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Update project fields with ownership verification."""
     project = await repo.get_by_id(project_id)
@@ -188,12 +185,11 @@ async def update_project(
             detail=f"Project with ID '{project_id}' not found.",
         )
 
-    if project.owner_user_id is not None:
-        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project with ID '{project_id}' not found.",
-            )
+    if current_user.role != "admin" and project.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found.",
+        )
 
     updated = await repo.update(
         project_id=project_id,
@@ -211,6 +207,7 @@ async def update_project(
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
         204: {"description": "Project deleted"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Project not found"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
@@ -218,7 +215,7 @@ async def update_project(
 async def delete_project(
     project_id: uuid.UUID,
     repo: ProjectRepository = Depends(get_project_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Delete a project by UUID with ownership verification."""
     project = await repo.get_by_id(project_id)
@@ -228,12 +225,11 @@ async def delete_project(
             detail=f"Project with ID '{project_id}' not found.",
         )
 
-    if project.owner_user_id is not None:
-        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Project with ID '{project_id}' not found.",
-            )
+    if current_user.role != "admin" and project.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found.",
+        )
 
     await repo.delete(project_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

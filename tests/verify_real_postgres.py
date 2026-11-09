@@ -37,6 +37,7 @@ async def main():
 
     # Configure application settings for live PostgreSQL
     os.environ["DATABASE_URL"] = PG_URL
+    os.environ["JWT_SECRET_KEY"] = "test-postgres-jwt-secret-key-32-characters-minimum"
     db_conn._engine = None
     db_conn._session_factory = None
     get_settings.cache_clear()
@@ -246,12 +247,27 @@ async def main():
     print("\n[STEP 8] Testing FastAPI endpoints against live PostgreSQL (Objective 14)...")
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        # Register and login a live test user
+        reg_res = await client.post("/api/v1/auth/register", json={
+            "email": "live_postgres_tester@example.com",
+            "password": "Password123!@#",
+            "full_name": "Live Postgres Tester",
+        })
+        assert reg_res.status_code in (201, 409)
+        login_res = await client.post("/api/v1/auth/login", json={
+            "email": "live_postgres_tester@example.com",
+            "password": "Password123!@#",
+        })
+        auth_token = login_res.json()["access_token"]
+        auth_headers = {"Authorization": f"Bearer {auth_token}"}
+        print("  -> Authenticated test session established with JWT Bearer token")
+
         # Create a project via API
         proj_res = await client.post("/api/v1/projects", json={
             "name": "Live Analysis API Project",
             "description": "Tested against PostgreSQL",
             "technology_stack": {"fastapi": True, "postgresql": True},
-        })
+        }, headers=auth_headers)
         assert proj_res.status_code == 201, f"Failed creating project: {proj_res.text}"
         proj_id = proj_res.json()["id"]
         print(f"  -> POST /api/v1/projects returned 201, Project ID: {proj_id}")
@@ -275,7 +291,7 @@ async def main():
             "static_only": True,
         }
 
-        res = await client.post("/api/v1/edgemind/analyze", json=analyze_payload)
+        res = await client.post("/api/v1/edgemind/analyze", json=analyze_payload, headers=auth_headers)
         assert res.status_code == 200, f"Analysis failed: {res.text}"
         data = res.json()
         assert data["status"] == "SUCCESS"
@@ -284,13 +300,13 @@ async def main():
         print(f"  -> POST /api/v1/edgemind/analyze persisted session ID: {sess_id}")
 
         # Verify session is queryable through the API from PostgreSQL
-        sess_res = await client.get(f"/api/v1/analyses/{sess_id}")
+        sess_res = await client.get(f"/api/v1/analyses/{sess_id}", headers=auth_headers)
         assert sess_res.status_code == 200
         assert sess_res.json()["project_id"] == proj_id
         print(f"  -> GET /api/v1/analyses/{sess_id} confirmed persisted data in PostgreSQL")
 
         # Verify JOIN report endpoint through API
-        report_res = await client.get("/api/v1/analyses/report")
+        report_res = await client.get("/api/v1/analyses/report", headers=auth_headers)
         assert report_res.status_code == 200
         assert len(report_res.json()) >= 1
         print("  -> GET /api/v1/analyses/report confirmed multi-table JOIN via API")
@@ -318,7 +334,7 @@ async def main():
         print("  -> SUCCESS: When PostgreSQL was offline/unconfigured, analysis succeeded with analysis_session_id=null")
 
         # Verify CRUD endpoints return 503 Service Unavailable when DB is offline
-        crud_res = await client.get("/api/v1/projects")
+        crud_res = await client.get("/api/v1/projects", headers=auth_headers)
         assert crud_res.status_code == 503
         print("  -> SUCCESS: Project CRUD returned HTTP 503 as expected when database is unavailable")
 

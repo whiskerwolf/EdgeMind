@@ -15,7 +15,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.auth.dependencies import get_optional_current_user
+from core.auth.dependencies import get_current_active_user
 from core.database.connection import get_db
 from core.database.models import User
 from core.database.repositories.analysis_repository import AnalysisRepository
@@ -50,6 +50,7 @@ def get_analysis_repo(db: Optional[AsyncSession] = Depends(get_db)) -> AnalysisR
             "model": List[AnalysisReportItemResponse],
             "description": "Analysis sessions joined with Project and Problem metadata",
         },
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
 )
@@ -58,14 +59,14 @@ async def get_analysis_report(
     limit: int = Query(50, ge=1, le=100),
     project_id: Optional[uuid.UUID] = None,
     repo: AnalysisRepository = Depends(get_analysis_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """
     SQL JOIN Demonstration 2:
     Retrieve analysis history with joined Project and Problem metadata in a single query.
     Enforces user isolation for regular users; administrators can view across all users.
     """
-    user_filter = current_user.id if (current_user and current_user.role != "admin") else None
+    user_filter = None if current_user.role == "admin" else current_user.id
     return await repo.get_analysis_history_report(
         skip=skip,
         limit=limit,
@@ -80,6 +81,7 @@ async def get_analysis_report(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": List[AnalysisSessionResponse], "description": "List of analysis sessions"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
 )
@@ -91,10 +93,10 @@ async def list_analyses(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     repo: AnalysisRepository = Depends(get_analysis_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """List analysis sessions with pagination and filters. Enforces user ownership isolation."""
-    user_filter = current_user.id if (current_user and current_user.role != "admin") else None
+    user_filter = None if current_user.role == "admin" else current_user.id
     sessions = await repo.list_all(
         skip=skip,
         limit=limit,
@@ -113,6 +115,7 @@ async def list_analyses(
     status_code=status.HTTP_200_OK,
     responses={
         200: {"model": AnalysisSessionResponse, "description": "Analysis session details"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Analysis session not found"},
         422: {"model": ErrorResponse, "description": "Invalid UUID format"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
@@ -121,7 +124,7 @@ async def list_analyses(
 async def get_analysis(
     analysis_id: uuid.UUID,
     repo: AnalysisRepository = Depends(get_analysis_repo),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Get an analysis session by UUID with ownership verification (returns 404 on cross-user access)."""
     session_rec = await repo.get_by_id(analysis_id)
@@ -131,13 +134,12 @@ async def get_analysis(
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
 
-    # Ownership isolation check
-    if session_rec.user_id is not None:
-        if not current_user or (current_user.id != session_rec.user_id and current_user.role != "admin"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Analysis session with ID '{analysis_id}' not found.",
-            )
+    # Ownership isolation check: ordinary users can only access their own analysis sessions
+    if current_user.role != "admin" and session_rec.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Analysis session with ID '{analysis_id}' not found.",
+        )
 
     return session_rec.to_dict()
 
@@ -149,6 +151,8 @@ async def get_analysis(
     responses={
         201: {"model": AnalysisSessionResponse, "description": "Analysis session created"},
         400: {"model": ErrorResponse, "description": "Invalid foreign key or payload"},
+        401: {"model": ErrorResponse, "description": "Authentication required"},
+        404: {"model": ErrorResponse, "description": "Referenced project not found"},
         422: {"model": ErrorResponse, "description": "Validation error"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
     },
@@ -156,7 +160,7 @@ async def get_analysis(
 async def create_analysis_session(
     payload: AnalysisSessionCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User = Depends(get_current_active_user),
 ):
     """Programmatically record an analysis session, assigning authenticated user ownership."""
     if db is None:
@@ -181,8 +185,13 @@ async def create_analysis_session(
         project = await project_repo.get_by_id(proj_uuid)
         if not project:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Referenced project with ID '{payload.project_id}' does not exist.",
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Referenced project with ID '{payload.project_id}' not found.",
+            )
+        if current_user.role != "admin" and project.owner_user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Referenced project with ID '{payload.project_id}' not found.",
             )
 
     prob_uuid = None
@@ -201,8 +210,6 @@ async def create_analysis_session(
                 detail=f"Referenced problem with ID '{payload.problem_id}' does not exist.",
             )
 
-    user_id = current_user.id if current_user else None
-
     session_rec = await analysis_repo.create(
         analysis_mode=payload.analysis_mode,
         language=payload.language or "python",
@@ -212,7 +219,7 @@ async def create_analysis_session(
         duration_ms=payload.duration_ms or 0.0,
         project_id=proj_uuid,
         problem_id=prob_uuid,
-        user_id=user_id,
+        user_id=current_user.id,
     )
     return session_rec.to_dict()
 

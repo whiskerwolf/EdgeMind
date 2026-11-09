@@ -28,9 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from core.api import app
+from core.auth.dependencies import get_current_active_user, get_optional_current_user
 from core.config import get_settings
 from core.database.connection import get_db
-from core.database.models import AnalysisSession, Base, Problem, Project
+from core.database.models import AnalysisSession, Base, Problem, Project, User
 from core.database.repositories import (
     AnalysisRepository,
     ProblemRepository,
@@ -96,11 +97,32 @@ async def async_session(async_db_engine) -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture
 def test_client_with_db(async_db_engine):
     """FastAPI TestClient with overridden get_db dependency pointing to the test DB."""
+    import asyncio
+
     session_maker = async_sessionmaker(
         bind=async_db_engine,
         class_=AsyncSession,
         expire_on_commit=False,
     )
+
+    persistence_user = User(
+        id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        email="persistence_test@example.com",
+        password_hash="fake_hash",
+        full_name="Persistence Tester",
+        role="admin",
+        is_active=True,
+    )
+
+    async def seed_user():
+        async with session_maker() as session:
+            session.add(persistence_user)
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+    asyncio.run(seed_user())
 
     async def override_get_db():
         async with session_maker() as session:
@@ -113,10 +135,17 @@ def test_client_with_db(async_db_engine):
             finally:
                 await session.close()
 
+    async def override_user():
+        return persistence_user
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_active_user] = override_user
+    app.dependency_overrides[get_optional_current_user] = override_user
     client = TestClient(app)
     yield client
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_active_user, None)
+    app.dependency_overrides.pop(get_optional_current_user, None)
 
 
 @pytest.fixture
@@ -125,10 +154,26 @@ def test_client_db_disabled():
     async def override_get_db_none():
         yield None
 
+    persistence_user = User(
+        id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        email="persistence_test@example.com",
+        password_hash="fake_hash",
+        full_name="Persistence Tester",
+        role="admin",
+        is_active=True,
+    )
+
+    async def override_user():
+        return persistence_user
+
     app.dependency_overrides[get_db] = override_get_db_none
+    app.dependency_overrides[get_current_active_user] = override_user
+    app.dependency_overrides[get_optional_current_user] = override_user
     client = TestClient(app)
     yield client
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_active_user, None)
+    app.dependency_overrides.pop(get_optional_current_user, None)
 
 
 # -----------------------------------------------------------------------------
