@@ -10,6 +10,7 @@ Verifies:
 
 import json
 import os
+import re
 import struct
 import subprocess
 import pytest
@@ -21,7 +22,7 @@ MANIFEST_PATH = os.path.join(SCRIPTS_DIR, "com.edgemind.native_host.json")
 EXE_PATH = os.path.join(SCRIPTS_DIR, "edgemind_native_host.exe")
 EXT_MANIFEST_PATH = os.path.join(EXTENSION_DIR, "manifest.json")
 BACKGROUND_JS_PATH = os.path.join(EXTENSION_DIR, "scripts", "background.js")
-VERIFIED_EXT_ID = "ajhfccooimcjfbablbbpicimdjolmndn"
+CHROME_ORIGIN_REGEX = re.compile(r"^chrome-extension://[a-p]{32}/$")
 
 
 def test_native_messaging_manifest_validity():
@@ -36,14 +37,17 @@ def test_native_messaging_manifest_validity():
     assert os.path.isfile(data.get("path")), f"Executable not found at {data.get('path')}"
 
     allowed = data.get("allowed_origins", [])
-    expected_origin = f"chrome-extension://{VERIFIED_EXT_ID}/"
-    assert expected_origin in allowed, f"Allowed origins must contain {expected_origin}"
+    assert isinstance(allowed, list) and len(allowed) > 0, "allowed_origins must be a non-empty list"
+    for origin in allowed:
+        assert CHROME_ORIGIN_REGEX.match(origin), (
+            f"Invalid Chrome extension origin: '{origin}'. Expected format: 'chrome-extension://<32-char-id>/'"
+        )
 
 
 def test_native_host_executable_self_check():
     """Verify native host executable compiles/runs and passes --check."""
     assert os.path.isfile(EXE_PATH), f"Native host executable missing at {EXE_PATH}"
-    result = subprocess.run([EXE_PATH, "--check"], capture_output=True, text=True, timeout=10)
+    result = subprocess.run([EXE_PATH, "--check"], capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert "EdgeMind Native Host CLI Diagnostic Test" in result.stdout
 

@@ -35,12 +35,20 @@ class HttpAdapter(AIAdapter):
         return self.provider_name
 
     def get_api_key(self) -> Optional[str]:
-        """Read API key exclusively from environment variables."""
+        """Read API key exclusively from centralized settings or environment variables."""
+        try:
+            from core.config import get_settings
+            cfg_key = get_settings().get_ai_api_key()
+            if cfg_key:
+                return cfg_key
+        except Exception:
+            pass
         return (
             os.environ.get(self.api_key_env_var)
             or os.environ.get("EDGEMIND_AI_KEY")
             or os.environ.get("CODEDOCTOR_AI_KEY")
             or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
         )
 
     def is_available(self) -> bool:
@@ -52,6 +60,11 @@ class HttpAdapter(AIAdapter):
         sanitized = message
         if key and key in sanitized:
             sanitized = sanitized.replace(key, "[REDACTED]")
+        try:
+            from core.config import get_settings
+            sanitized = get_settings().sanitize_error(sanitized)
+        except Exception:
+            pass
         active_key = self.get_api_key()
         if active_key and active_key in sanitized:
             sanitized = sanitized.replace(active_key, "[REDACTED]")
