@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import uuid
 
-from sqlalchemy import DateTime, String, Text, Uuid
+from sqlalchemy import DateTime, ForeignKey, String, Text, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -17,6 +17,7 @@ from core.database.base import Base, TimestampMixin, utc_now
 class Project(Base, TimestampMixin):
     """
     Project entity representing a codebase or practice collection under test intelligence.
+    Supports multi-tenant ownership via owner_user_id.
     """
     __tablename__ = "projects"
 
@@ -24,6 +25,12 @@ class Project(Base, TimestampMixin):
         Uuid(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+    )
+    owner_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE", name="fk_projects_owner_user_id_users"),
+        nullable=True,
+        index=True,
     )
     name: Mapped[str] = mapped_column(
         String(255),
@@ -58,6 +65,10 @@ class Project(Base, TimestampMixin):
     )
 
     # Relationships
+    owner: Mapped[Optional["User"]] = relationship(
+        "User",
+        back_populates="projects",
+    )
     analysis_sessions: Mapped[List["AnalysisSession"]] = relationship(
         "AnalysisSession",
         back_populates="project",
@@ -69,6 +80,7 @@ class Project(Base, TimestampMixin):
         """Convert entity to a clean dictionary."""
         return {
             "id": str(self.id),
+            "owner_user_id": str(self.owner_user_id) if self.owner_user_id else None,
             "name": self.name,
             "description": self.description,
             "language": self.language,

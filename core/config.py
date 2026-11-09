@@ -89,10 +89,34 @@ class Settings(BaseSettings):
     db_pool_pre_ping: bool = Field(default=True, description="Enable connection health pre-ping before checkout")
     db_echo: bool = Field(default=False, description="Echo SQL statements to logs/stdout")
 
+    # JWT Authentication & Multi-Tenancy (Phase 3)
+    jwt_secret_key: Optional[str] = Field(default=None, description="Cryptographic secret key for signing JWT tokens")
+    jwt_algorithm: str = Field(default="HS256", description="JWT signing algorithm")
+    jwt_access_token_expire_minutes: int = Field(default=15, description="Access token expiration in minutes (~15 min)")
+    jwt_refresh_token_expire_days: int = Field(default=7, description="Refresh token expiration in days (~7 days)")
+    jwt_issuer: str = Field(default="edgemind-api", description="Expected JWT issuer claim (iss)")
+    jwt_audience: str = Field(default="edgemind-client", description="Expected JWT audience claim (aud)")
+
+    # Administrator Bootstrap (Phase 3)
+    admin_bootstrap_email: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin email")
+    admin_bootstrap_password: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin password")
+
     @property
     def is_database_enabled(self) -> bool:
         """Check if a database URL is configured and non-empty."""
         return bool(self.database_url and self.database_url.strip())
+
+    def get_jwt_secret_key(self) -> str:
+        """
+        Retrieve configured JWT secret key.
+        Raises RuntimeError if the secret key is missing or blank.
+        Never silently falls back to an insecure default.
+        """
+        if not self.jwt_secret_key or not self.jwt_secret_key.strip():
+            raise RuntimeError(
+                "JWT secret key is not configured. Set the JWT_SECRET_KEY environment variable."
+            )
+        return self.jwt_secret_key.strip()
 
     def get_ai_api_key(self) -> Optional[str]:
         """
@@ -111,13 +135,18 @@ class Settings(BaseSettings):
 
     def sanitize_error(self, message: str) -> str:
         """
-        Redact sensitive API keys or database credentials from error or log messages.
+        Redact sensitive API keys, database credentials, or JWT tokens from error or log messages.
         """
         if not message:
             return ""
         sanitized = str(message)
         # Redact database passwords from connection URLs (e.g. postgresql://user:pass@host)
         sanitized = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", sanitized)
+        # Redact Authorization Bearer tokens
+        sanitized = re.sub(r"Bearer\s+[A-Za-z0-9\-_\.]+", "Bearer [REDACTED]", sanitized)
+        # Redact JWT secret key if present
+        if self.jwt_secret_key and self.jwt_secret_key in sanitized:
+            sanitized = sanitized.replace(self.jwt_secret_key, "[REDACTED]")
         active_key = self.get_ai_api_key()
         if active_key and active_key in sanitized:
             sanitized = sanitized.replace(active_key, "[REDACTED]")

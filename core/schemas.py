@@ -145,6 +145,7 @@ class ProjectResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    owner_user_id: Optional[str] = None
     name: str
     description: Optional[str] = None
     language: Optional[str] = "python"
@@ -216,6 +217,7 @@ class AnalysisSessionResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    user_id: Optional[str] = None
     project_id: Optional[str] = None
     problem_id: Optional[str] = None
     analysis_mode: str

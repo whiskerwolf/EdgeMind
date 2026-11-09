@@ -15,7 +15,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.auth.dependencies import get_optional_current_user
 from core.database.connection import get_db
+from core.database.models import User
 from core.database.repositories.analysis_repository import AnalysisRepository
 from core.database.repositories.problem_repository import ProblemRepository
 from core.database.repositories.project_repository import ProjectRepository
@@ -56,13 +58,20 @@ async def get_analysis_report(
     limit: int = Query(50, ge=1, le=100),
     project_id: Optional[uuid.UUID] = None,
     repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
     SQL JOIN Demonstration 2:
     Retrieve analysis history with joined Project and Problem metadata in a single query.
-    Eliminates N+1 query patterns.
+    Enforces user isolation for regular users; administrators can view across all users.
     """
-    return await repo.get_analysis_history_report(skip=skip, limit=limit, project_id=project_id)
+    user_filter = current_user.id if (current_user and current_user.role != "admin") else None
+    return await repo.get_analysis_history_report(
+        skip=skip,
+        limit=limit,
+        project_id=project_id,
+        user_id=user_filter,
+    )
 
 
 @router.get(
@@ -82,13 +91,16 @@ async def list_analyses(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """List analysis sessions with pagination and filters."""
+    """List analysis sessions with pagination and filters. Enforces user ownership isolation."""
+    user_filter = current_user.id if (current_user and current_user.role != "admin") else None
     sessions = await repo.list_all(
         skip=skip,
         limit=limit,
         project_id=project_id,
         problem_id=problem_id,
+        user_id=user_filter,
         start_date=start_date,
         end_date=end_date,
     )
@@ -109,14 +121,24 @@ async def list_analyses(
 async def get_analysis(
     analysis_id: uuid.UUID,
     repo: AnalysisRepository = Depends(get_analysis_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Get an analysis session by UUID."""
+    """Get an analysis session by UUID with ownership verification (returns 404 on cross-user access)."""
     session_rec = await repo.get_by_id(analysis_id)
     if not session_rec:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
+
+    # Ownership isolation check
+    if session_rec.user_id is not None:
+        if not current_user or (current_user.id != session_rec.user_id and current_user.role != "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Analysis session with ID '{analysis_id}' not found.",
+            )
+
     return session_rec.to_dict()
 
 
@@ -134,8 +156,9 @@ async def get_analysis(
 async def create_analysis_session(
     payload: AnalysisSessionCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Programmatically record an analysis session."""
+    """Programmatically record an analysis session, assigning authenticated user ownership."""
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -178,6 +201,8 @@ async def create_analysis_session(
                 detail=f"Referenced problem with ID '{payload.problem_id}' does not exist.",
             )
 
+    user_id = current_user.id if current_user else None
+
     session_rec = await analysis_repo.create(
         analysis_mode=payload.analysis_mode,
         language=payload.language or "python",
@@ -187,6 +212,7 @@ async def create_analysis_session(
         duration_ms=payload.duration_ms or 0.0,
         project_id=proj_uuid,
         problem_id=prob_uuid,
+        user_id=user_id,
     )
     return session_rec.to_dict()
 

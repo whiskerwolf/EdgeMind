@@ -29,8 +29,9 @@ class AnalysisRepository:
         duration_ms: float = 0.0,
         project_id: Optional[uuid.UUID] = None,
         problem_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> AnalysisSession:
-        """Create and persist a new AnalysisSession record."""
+        """Create and persist a new AnalysisSession record with optional user ownership."""
         session_record = AnalysisSession(
             analysis_mode=analysis_mode.strip(),
             language=language.strip().lower() if language else "python",
@@ -40,13 +41,18 @@ class AnalysisRepository:
             duration_ms=max(0.0, float(duration_ms)),
             project_id=project_id,
             problem_id=problem_id,
+            user_id=user_id,
         )
         self.session.add(session_record)
         await self.session.flush()
         return session_record
 
-    async def get_by_id(self, analysis_id: uuid.UUID) -> Optional[AnalysisSession]:
-        """Fetch an analysis session by UUID with eager-loaded relations."""
+    async def get_by_id(
+        self,
+        analysis_id: uuid.UUID,
+        user_id: Optional[uuid.UUID] = None,
+    ) -> Optional[AnalysisSession]:
+        """Fetch an analysis session by UUID with eager-loaded relations and optional user isolation."""
         stmt = (
             select(AnalysisSession)
             .options(
@@ -55,6 +61,9 @@ class AnalysisRepository:
             )
             .where(AnalysisSession.id == analysis_id)
         )
+        if user_id is not None:
+            stmt = stmt.where(AnalysisSession.user_id == user_id)
+
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -64,16 +73,19 @@ class AnalysisRepository:
         limit: int = 50,
         project_id: Optional[uuid.UUID] = None,
         problem_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> List[AnalysisSession]:
-        """List analysis sessions with pagination and filters."""
+        """List analysis sessions with pagination, date, and user ownership filters."""
         stmt = (
             select(AnalysisSession)
             .order_by(AnalysisSession.created_at.desc())
             .offset(skip)
             .limit(limit)
         )
+        if user_id is not None:
+            stmt = stmt.where(AnalysisSession.user_id == user_id)
         if project_id:
             stmt = stmt.where(AnalysisSession.project_id == project_id)
         if problem_id:
@@ -91,10 +103,11 @@ class AnalysisRepository:
         skip: int = 0,
         limit: int = 50,
         project_id: Optional[uuid.UUID] = None,
+        user_id: Optional[uuid.UUID] = None,
     ) -> List[Dict[str, Any]]:
         """
         SQL JOIN Query: Retrieve analysis history joined with Project and Problem metadata.
-        Demonstrates a multi-table JOIN without N+1 query patterns.
+        Demonstrates a multi-table JOIN without N+1 query patterns, enforcing user isolation.
         """
         stmt = (
             select(
@@ -110,6 +123,8 @@ class AnalysisRepository:
             .offset(skip)
             .limit(limit)
         )
+        if user_id is not None:
+            stmt = stmt.where(AnalysisSession.user_id == user_id)
         if project_id:
             stmt = stmt.where(AnalysisSession.project_id == project_id)
 

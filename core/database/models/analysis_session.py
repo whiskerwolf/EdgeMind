@@ -24,6 +24,12 @@ class AnalysisSession(Base, TimestampMixin):
         primary_key=True,
         default=uuid.uuid4,
     )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_analysis_sessions_user_id_users"),
+        nullable=True,
+        index=True,
+    )
     project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("projects.id", ondelete="CASCADE"),
@@ -69,6 +75,10 @@ class AnalysisSession(Base, TimestampMixin):
     )
 
     # Relationships
+    user: Mapped[Optional["User"]] = relationship(
+        "User",
+        back_populates="analysis_sessions",
+    )
     project: Mapped[Optional["Project"]] = relationship(
         "Project",
         back_populates="analysis_sessions",
@@ -82,6 +92,7 @@ class AnalysisSession(Base, TimestampMixin):
         """Convert entity to a clean dictionary."""
         return {
             "id": str(self.id),
+            "user_id": str(self.user_id) if self.user_id else None,
             "project_id": str(self.project_id) if self.project_id else None,
             "problem_id": str(self.problem_id) if self.problem_id else None,
             "analysis_mode": self.analysis_mode,

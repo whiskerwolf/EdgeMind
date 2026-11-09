@@ -10,3 +10,5 @@ asyncpg>=0.29.0
 alembic>=1.13.0
 aiosqlite>=0.20.0
 greenlet>=3.0.0
+pyjwt>=2.8.0
+pwdlib[argon2]>=0.2.0

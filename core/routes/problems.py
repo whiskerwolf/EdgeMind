@@ -13,7 +13,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.auth.dependencies import get_optional_current_user
 from core.database.connection import get_db
+from core.database.models import User
 from core.database.repositories.problem_repository import ProblemRepository
 from core.schemas import ErrorResponse, ProblemCreate, ProblemResponse
 
@@ -36,6 +38,7 @@ def get_problem_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ProblemRep
     status_code=status.HTTP_201_CREATED,
     responses={
         201: {"model": ProblemResponse, "description": "Problem successfully created"},
+        403: {"model": ErrorResponse, "description": "Insufficient permissions (admin required)"},
         409: {"model": ErrorResponse, "description": "Problem with platform and slug already exists"},
         422: {"model": ErrorResponse, "description": "Validation error"},
         503: {"model": ErrorResponse, "description": "Database unavailable"},
@@ -44,8 +47,18 @@ def get_problem_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ProblemRep
 async def create_problem(
     payload: ProblemCreate,
     repo: ProblemRepository = Depends(get_problem_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Create a new Problem record with unique constraint validation."""
+    """
+    Create a new Problem record with unique constraint validation.
+    Restricted to administrators. Regular users receive 403 Forbidden.
+    """
+    if current_user is not None and current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Problem creation is restricted to administrators.",
+        )
+
     platform = payload.platform or "leetcode"
     existing = await repo.get_by_platform_and_slug(
         platform=platform,

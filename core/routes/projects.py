@@ -16,7 +16,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.auth.dependencies import get_optional_current_user
 from core.database.connection import get_db
+from core.database.models import User
 from core.database.repositories.project_repository import ProjectRepository
 from core.schemas import (
     ErrorResponse,
@@ -52,14 +54,17 @@ def get_project_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ProjectRep
 async def create_project(
     payload: ProjectCreate,
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Create a new Project record."""
+    """Create a new Project record, assigning the authenticated user as owner."""
+    owner_id = current_user.id if current_user else None
     project = await repo.create(
         name=payload.name,
         description=payload.description,
         language=payload.language or "python",
         technology_stack=payload.technology_stack or {},
         status=payload.status or "active",
+        owner_user_id=owner_id,
     )
     return project.to_dict()
 
@@ -77,13 +82,18 @@ async def get_projects_statistics(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
     SQL JOIN Demonstration 1:
-    Retrieve all projects along with their aggregated analysis session counts.
-    Executes a single SQL OUTER JOIN with GROUP BY, eliminating N+1 queries.
+    Retrieve projects along with aggregated session counts in a single query.
+    Enforces tenant isolation for regular users; administrators can view across tenants.
     """
-    return await repo.get_projects_with_session_counts(skip=skip, limit=limit)
+    owner_filter = None
+    if current_user and current_user.role != "admin":
+        owner_filter = current_user.id
+
+    return await repo.get_projects_with_session_counts(skip=skip, limit=limit, owner_user_id=owner_filter)
 
 
 @router.get(
@@ -101,9 +111,20 @@ async def list_projects(
     status_filter: Optional[str] = Query(None, alias="status"),
     language: Optional[str] = None,
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """List all projects with pagination and optional filters."""
-    projects = await repo.list_all(skip=skip, limit=limit, status=status_filter, language=language)
+    """List projects with pagination and filters. Enforces user ownership isolation."""
+    owner_filter = None
+    if current_user and current_user.role != "admin":
+        owner_filter = current_user.id
+
+    projects = await repo.list_all(
+        skip=skip,
+        limit=limit,
+        status=status_filter,
+        language=language,
+        owner_user_id=owner_filter,
+    )
     return [p.to_dict() for p in projects]
 
 
@@ -121,14 +142,24 @@ async def list_projects(
 async def get_project(
     project_id: uuid.UUID,
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Get project details by UUID."""
+    """Get project details by UUID with ownership verification (returns 404 on cross-user access)."""
     project = await repo.get_by_id(project_id)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Project with ID '{project_id}' not found.",
         )
+
+    # Ownership isolation check
+    if project.owner_user_id is not None:
+        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with ID '{project_id}' not found.",
+            )
+
     return project.to_dict()
 
 
@@ -147,9 +178,24 @@ async def update_project(
     project_id: uuid.UUID,
     payload: ProjectUpdate,
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Update project fields."""
-    project = await repo.update(
+    """Update project fields with ownership verification."""
+    project = await repo.get_by_id(project_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project with ID '{project_id}' not found.",
+        )
+
+    if project.owner_user_id is not None:
+        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with ID '{project_id}' not found.",
+            )
+
+    updated = await repo.update(
         project_id=project_id,
         name=payload.name,
         description=payload.description,
@@ -157,12 +203,7 @@ async def update_project(
         technology_stack=payload.technology_stack,
         status=payload.status,
     )
-    if not project:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Project with ID '{project_id}' not found.",
-        )
-    return project.to_dict()
+    return updated.to_dict()
 
 
 @router.delete(
@@ -177,13 +218,23 @@ async def update_project(
 async def delete_project(
     project_id: uuid.UUID,
     repo: ProjectRepository = Depends(get_project_repo),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
-    """Delete a project by UUID."""
-    deleted = await repo.delete(project_id)
-    if not deleted:
+    """Delete a project by UUID with ownership verification."""
+    project = await repo.get_by_id(project_id)
+    if not project:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Project with ID '{project_id}' not found.",
         )
+
+    if project.owner_user_id is not None:
+        if not current_user or (current_user.id != project.owner_user_id and current_user.role != "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Project with ID '{project_id}' not found.",
+            )
+
+    await repo.delete(project_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

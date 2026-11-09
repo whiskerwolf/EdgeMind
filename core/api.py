@@ -27,14 +27,23 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from core.auth.dependencies import get_optional_current_user
+from core.auth.service import AuthService
 from core.config import get_settings
-from core.database.connection import close_db, get_db
+from core.database.connection import close_db, get_db, get_session_factory
+from core.database.models import User
 from core.database.repositories import (
     AnalysisRepository,
     ProblemRepository,
     ProjectRepository,
 )
-from core.routes import analyses_router, problems_router, projects_router
+from core.routes import (
+    analyses_router,
+    auth_router,
+    problems_router,
+    projects_router,
+    users_router,
+)
 from core.schemas import (
     AnalyzeCodeRequest,
     EdgeMindAnalyzeRequest,
@@ -61,6 +70,18 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context manager handling resource startup and shutdown."""
+    # Bootstrap initial admin account if database is active and credentials are provided
+    factory = get_session_factory()
+    if factory is not None:
+        try:
+            async with factory() as session:
+                auth_service = AuthService(session)
+                await auth_service.bootstrap_admin()
+                await session.commit()
+        except Exception as exc:
+            logger.warning(
+                f"Admin bootstrap check skipped or failed: {settings.sanitize_error(str(exc))}"
+            )
     yield
     # Gracefully dispose database connection pools on shutdown
     await close_db()
@@ -124,6 +145,8 @@ async def request_tracing_and_timing_middleware(request: Request, call_next):
 # -----------------------------------------------------------------------------
 # Mount REST API Routers
 # -----------------------------------------------------------------------------
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(users_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(problems_router, prefix="/api/v1")
 app.include_router(analyses_router, prefix="/api/v1")
@@ -293,6 +316,7 @@ async def analyze_endpoint(request: Request):
 async def edgemind_analyze_endpoint(
     request: Request,
     db: Optional[AsyncSession] = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_current_user),
 ):
     """
     EdgeMind Adaptive Code Analysis and Test Intelligence endpoint.
@@ -409,6 +433,21 @@ async def edgemind_analyze_endpoint(
                             "request_id": request_id,
                         },
                     )
+
+                # Ownership isolation check: cannot attach to another user's project
+                if existing_proj.owner_user_id is not None:
+                    if not current_user or (
+                        current_user.id != existing_proj.owner_user_id
+                        and current_user.role != "admin"
+                    ):
+                        return JSONResponse(
+                            status_code=404,
+                            content={
+                                "error": "Not Found",
+                                "detail": f"Referenced project with ID '{project_uuid}' not found.",
+                                "request_id": request_id,
+                            },
+                        )
             except HTTPException:
                 raise
             except Exception as db_check_err:
@@ -505,6 +544,7 @@ async def edgemind_analyze_endpoint(
             )
             candidates_count = len(candidates_list)
 
+            user_id = current_user.id if current_user else None
             session_record = await analysis_repo.create(
                 analysis_mode=analysis_mode,
                 language="python",
@@ -514,6 +554,7 @@ async def edgemind_analyze_endpoint(
                 duration_ms=duration_ms,
                 project_id=project_uuid,
                 problem_id=problem_id,
+                user_id=user_id,
             )
             analysis_session_id = str(session_record.id)
         except Exception as db_save_err:
