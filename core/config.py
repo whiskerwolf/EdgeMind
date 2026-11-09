@@ -77,6 +77,23 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
 
+    # Database Settings (PostgreSQL / SQLAlchemy 2.0 Async)
+    database_url: Optional[str] = Field(
+        default=None,
+        description="Async database URL (e.g. postgresql+asyncpg://postgres:postgres@localhost:5432/edgemind or sqlite+aiosqlite:///./edgemind.db)",
+    )
+    db_pool_size: int = Field(default=10, description="SQLAlchemy connection pool size")
+    db_max_overflow: int = Field(default=20, description="Maximum overflow connections beyond pool_size")
+    db_pool_timeout: float = Field(default=30.0, description="Connection pool checkout timeout in seconds")
+    db_pool_recycle: int = Field(default=1800, description="Recycle connections older than this many seconds")
+    db_pool_pre_ping: bool = Field(default=True, description="Enable connection health pre-ping before checkout")
+    db_echo: bool = Field(default=False, description="Echo SQL statements to logs/stdout")
+
+    @property
+    def is_database_enabled(self) -> bool:
+        """Check if a database URL is configured and non-empty."""
+        return bool(self.database_url and self.database_url.strip())
+
     def get_ai_api_key(self) -> Optional[str]:
         """
         Retrieve active AI key with precedence:
@@ -94,11 +111,13 @@ class Settings(BaseSettings):
 
     def sanitize_error(self, message: str) -> str:
         """
-        Redact sensitive API keys or credentials from error or log messages.
+        Redact sensitive API keys or database credentials from error or log messages.
         """
         if not message:
             return ""
         sanitized = str(message)
+        # Redact database passwords from connection URLs (e.g. postgresql://user:pass@host)
+        sanitized = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", sanitized)
         active_key = self.get_ai_api_key()
         if active_key and active_key in sanitized:
             sanitized = sanitized.replace(active_key, "[REDACTED]")

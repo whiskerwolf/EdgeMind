@@ -17,15 +17,24 @@ Includes:
 import json
 import logging
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from core.config import get_settings
+from core.database.connection import close_db, get_db
+from core.database.repositories import (
+    AnalysisRepository,
+    ProblemRepository,
+    ProjectRepository,
+)
+from core.routes import analyses_router, problems_router, projects_router
 from core.schemas import (
     AnalyzeCodeRequest,
     EdgeMindAnalyzeRequest,
@@ -48,12 +57,22 @@ logger.setLevel(logging.INFO)
 
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context manager handling resource startup and shutdown."""
+    yield
+    # Gracefully dispose database connection pools on shutdown
+    await close_db()
+
+
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
     description=settings.app_description,
     docs_url="/docs",
     redoc_url=None,
+    lifespan=lifespan,
 )
 
 # -----------------------------------------------------------------------------
@@ -100,6 +119,14 @@ async def request_tracing_and_timing_middleware(request: Request, call_next):
         f"in {elapsed_ms:.2f}ms [Request-ID: {request_id}]"
     )
     return response
+
+
+# -----------------------------------------------------------------------------
+# Mount REST API Routers
+# -----------------------------------------------------------------------------
+app.include_router(projects_router, prefix="/api/v1")
+app.include_router(problems_router, prefix="/api/v1")
+app.include_router(analyses_router, prefix="/api/v1")
 
 
 # -----------------------------------------------------------------------------
@@ -258,10 +285,15 @@ async def analyze_endpoint(request: Request):
     responses={
         200: {"description": "EdgeMind Adaptive Test Intelligence report"},
         400: {"model": ErrorResponse, "description": "Validation error or invalid request payload"},
+        404: {"model": ErrorResponse, "description": "Referenced project not found"},
+        422: {"model": ErrorResponse, "description": "Malformed UUID or unprocessable entity"},
         500: {"model": ErrorResponse, "description": "Unexpected internal error"},
     },
 )
-async def edgemind_analyze_endpoint(request: Request):
+async def edgemind_analyze_endpoint(
+    request: Request,
+    db: Optional[AsyncSession] = Depends(get_db),
+):
     """
     EdgeMind Adaptive Code Analysis and Test Intelligence endpoint.
 
@@ -271,7 +303,8 @@ async def edgemind_analyze_endpoint(request: Request):
         "filename": "optional_name.py",
         "problem_context": { ... },   # Optional ProblemContext dict
         "test_cases": [ ... ],        # Optional list of test cases (TestCase dicts or raw inputs)
-        "max_candidates": 10          # Optional integer limit (defaults to 10)
+        "max_candidates": 10,         # Optional integer limit (defaults to 10)
+        "project_id": "optional-uuid" # Optional project UUID
     }
 
     Guarantees:
@@ -280,6 +313,8 @@ async def edgemind_analyze_endpoint(request: Request):
     - Strict input bounds (64 KiB max source size)
     - Strict provenance tracking: candidates labeled GENERATED_TEST with null expected outputs
     - Sanitized JSON errors without internal stack traces
+    - Graceful degradation: If PostgreSQL is unconfigured or unreachable, analysis succeeds
+      and returns analysis_session_id: null.
     """
     request_id = getattr(request.state, "request_id", None)
 
@@ -334,6 +369,7 @@ async def edgemind_analyze_endpoint(request: Request):
     problem_context = body.get("problem_context")
     test_cases = body.get("test_cases")
     max_candidates = body.get("max_candidates", 10)
+    project_id_raw = body.get("project_id")
 
     # Explicitly enforce static_only
     if body.get("static_only") is False:
@@ -345,6 +381,40 @@ async def edgemind_analyze_endpoint(request: Request):
             },
         )
 
+    # Validate project_id format and existence if supplied
+    project_uuid: Optional[uuid.UUID] = None
+    if project_id_raw is not None:
+        try:
+            project_uuid = uuid.UUID(str(project_id_raw))
+        except (ValueError, TypeError):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": "Unprocessable Entity",
+                    "detail": f"Invalid project_id UUID format: '{project_id_raw}'",
+                    "request_id": request_id,
+                },
+            )
+
+        if db is not None:
+            try:
+                project_repo = ProjectRepository(db)
+                existing_proj = await project_repo.get_by_id(project_uuid)
+                if not existing_proj:
+                    return JSONResponse(
+                        status_code=404,
+                        content={
+                            "error": "Not Found",
+                            "detail": f"Referenced project with ID '{project_uuid}' not found.",
+                            "request_id": request_id,
+                        },
+                    )
+            except HTTPException:
+                raise
+            except Exception as db_check_err:
+                sanitized = settings.sanitize_error(str(db_check_err))
+                logger.warning(f"Database error checking project existence (graceful degradation): {sanitized}")
+
     try:
         # Validate typed schema
         req_model = EdgeMindAnalyzeRequest(
@@ -354,6 +424,7 @@ async def edgemind_analyze_endpoint(request: Request):
             test_cases=test_cases,
             max_candidates=max_candidates,
             static_only=True,
+            project_id=str(project_uuid) if project_uuid else None,
         )
     except Exception as val_err:
         return JSONResponse(
@@ -361,6 +432,7 @@ async def edgemind_analyze_endpoint(request: Request):
             content={"error": "Bad Request", "detail": str(val_err)},
         )
 
+    start_analyze_time = time.perf_counter()
     try:
         report = analyze_edgemind(
             code=req_model.code,
@@ -370,7 +442,6 @@ async def edgemind_analyze_endpoint(request: Request):
             max_candidates=req_model.max_candidates or 10,
             static_only=True,
         )
-        return JSONResponse(status_code=200, content=report)
     except (TypeError, ValueError) as err:
         return JSONResponse(
             status_code=400,
@@ -384,6 +455,76 @@ async def edgemind_analyze_endpoint(request: Request):
                 "detail": "An unexpected error occurred during EdgeMind analysis.",
             },
         )
+    duration_ms = (time.perf_counter() - start_analyze_time) * 1000.0
+
+    # Auto-link problem and persist analysis session metadata if database is available
+    analysis_session_id: Optional[str] = None
+    if db is not None:
+        try:
+            problem_id: Optional[uuid.UUID] = None
+            if isinstance(problem_context, dict):
+                prob_slug = (
+                    problem_context.get("slug")
+                    or problem_context.get("problem_slug")
+                    or ""
+                ).strip().lower()
+                prob_title = (problem_context.get("title") or "").strip()
+                prob_platform = (problem_context.get("platform") or "leetcode").strip().lower()
+                prob_difficulty = problem_context.get("difficulty")
+
+                if prob_title and not prob_slug:
+                    prob_slug = prob_title.lower().replace(" ", "-")
+                elif prob_slug and not prob_title:
+                    prob_title = prob_slug.replace("-", " ").title()
+
+                if prob_slug and prob_title:
+                    problem_repo = ProblemRepository(db)
+                    problem_rec, _ = await problem_repo.get_or_create(
+                        title=prob_title,
+                        problem_slug=prob_slug,
+                        platform=prob_platform,
+                        difficulty=prob_difficulty,
+                    )
+                    problem_id = problem_rec.id
+
+            analysis_repo = AnalysisRepository(db)
+            analysis_mode = report.get("analysis_mode", "BASELINE_DRIVEN")
+            analysis_status = report.get("status", "SUCCESS")
+            ti_section = (
+                report.get("test_intelligence", {})
+                if isinstance(report.get("test_intelligence"), dict)
+                else {}
+            )
+            gaps_count = ti_section.get(
+                "total_gaps",
+                len(ti_section.get("coverage_gaps", ti_section.get("identified_gaps", []))),
+            )
+            candidates_list = ti_section.get(
+                "generated_candidates",
+                ti_section.get("candidate_tests", []),
+            )
+            candidates_count = len(candidates_list)
+
+            session_record = await analysis_repo.create(
+                analysis_mode=analysis_mode,
+                language="python",
+                analysis_status=analysis_status,
+                gaps_detected=gaps_count,
+                candidates_generated=candidates_count,
+                duration_ms=duration_ms,
+                project_id=project_uuid,
+                problem_id=problem_id,
+            )
+            analysis_session_id = str(session_record.id)
+        except Exception as db_save_err:
+            sanitized = settings.sanitize_error(str(db_save_err))
+            logger.warning(
+                f"Failed to persist analysis session to database (graceful degradation): {sanitized}"
+            )
+            analysis_session_id = None
+
+    report["analysis_session_id"] = analysis_session_id
+    return JSONResponse(status_code=200, content=report)
 
 
 def run_server(host: Optional[str] = None, port: Optional[int] = None, reload: bool = False):
