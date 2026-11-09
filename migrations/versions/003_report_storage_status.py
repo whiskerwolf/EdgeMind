@@ -1,4 +1,5 @@
 """Phase 4 migration: Add report_storage_status to analysis_sessions table.
+Tracks report storage lifecycle: PENDING, STORED, FAILED, DELETED, NOT_CONFIGURED.
 
 Revision ID: 003_report_storage_status
 Revises: 002_auth_and_ownership
@@ -38,3 +39,4 @@ def downgrade() -> None:
     with op.batch_alter_table("analysis_sessions") as batch_op:
         batch_op.drop_index(op.f("ix_analysis_sessions_report_storage_status"))
         batch_op.drop_column("report_storage_status")
+

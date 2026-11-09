@@ -414,7 +414,7 @@ async def delete_analysis_report(
 ):
     """
     Delete the detailed report document from MongoDB while preserving PostgreSQL session metadata.
-    Updates report_storage_status to 'NOT_CONFIGURED'.
+    Updates report_storage_status to 'DELETED'.
     """
     session_rec = await analysis_repo.get_by_id(analysis_id)
     if not session_rec:
@@ -438,6 +438,6 @@ async def delete_analysis_report(
 
     report_repo = ReportRepository(mongo_db)
     await report_repo.delete_report(str(analysis_id))
-    await analysis_repo.update_storage_status(analysis_id, "NOT_CONFIGURED")
+    await analysis_repo.update_storage_status(analysis_id, "DELETED")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

@@ -262,7 +262,7 @@ EdgeMind employs a dual-database persistence design separating relational metada
 | **Users & Authentication** | PostgreSQL (`asyncpg` + SQLAlchemy 2.0) | User accounts, Argon2id password hashes, JWT refresh token families, RBAC roles (`user`, `admin`). |
 | **Projects & Tenancy** | PostgreSQL | Multi-tenant projects, user ownership links, creation/update timestamps. |
 | **Problem Catalog** | PostgreSQL | LeetCode problem slugs, titles, and difficulty metadata. |
-| **Analysis Metadata** | PostgreSQL | `analysis_sessions` table tracking timestamps, status, project/problem/user links, and `report_storage_status` (`PENDING`, `STORED`, `FAILED`, `NOT_CONFIGURED`). |
+| **Analysis Metadata** | PostgreSQL | `analysis_sessions` table tracking timestamps, status, project/problem/user links, and `report_storage_status` (`PENDING`, `STORED`, `FAILED`, `DELETED`, `NOT_CONFIGURED`). |
 | **Analysis Reports & Artifacts** | MongoDB (`pymongo.AsyncMongoClient`) | `analysis_reports` collection storing full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics. |
 
 ### MongoDB Document Schema (`analysis_reports`)
@@ -340,7 +340,7 @@ Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0
 #### 5. Delete Analysis Document
 - **Method**: `DELETE`
 - **Path**: `/api/v1/analyses/{analysis_id}/report`
-- **Auth**: Bearer Token required. Safely removes the MongoDB document and updates the PostgreSQL session's `report_storage_status` to `"FAILED"`, preserving audit history.
+- **Auth**: Bearer Token required. Safely removes the MongoDB document and updates the PostgreSQL session's `report_storage_status` to `"DELETED"`, preserving audit history.
 
 ---
 

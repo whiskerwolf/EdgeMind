@@ -623,10 +623,15 @@ async def edgemind_analyze_endpoint(
                 f"Failed to persist analysis session to database (graceful degradation): {sanitized}"
             )
             analysis_session_id = None
-            report_storage_status = "NOT_CONFIGURED"
+            cfg = get_settings()
+            report_storage_status = "FAILED" if cfg.is_mongodb_enabled else "NOT_CONFIGURED"
 
     report["analysis_session_id"] = analysis_session_id
-    report["report_storage_status"] = report_storage_status if db is not None else "NOT_CONFIGURED"
+    cfg = get_settings()
+    if db is None:
+        report["report_storage_status"] = "FAILED" if cfg.is_mongodb_enabled else "NOT_CONFIGURED"
+    else:
+        report["report_storage_status"] = report_storage_status
     return JSONResponse(status_code=200, content=report)
 
 

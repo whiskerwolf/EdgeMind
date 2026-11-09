@@ -74,7 +74,10 @@ class AnalysisRepository:
         analysis_id: uuid.UUID,
         status: str,
     ) -> Optional[AnalysisSession]:
-        """Update report_storage_status on an AnalysisSession record."""
+        """
+        Update report_storage_status on an AnalysisSession record.
+        Valid status transitions: PENDING, STORED, FAILED, DELETED, NOT_CONFIGURED.
+        """
         session_rec = await self.get_by_id(analysis_id)
         if session_rec:
             session_rec.report_storage_status = status

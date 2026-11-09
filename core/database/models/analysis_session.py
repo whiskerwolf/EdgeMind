@@ -73,6 +73,8 @@ class AnalysisSession(Base, TimestampMixin):
         nullable=False,
         default=0.0,
     )
+    # Report storage lifecycle state: PENDING, STORED, FAILED, DELETED, NOT_CONFIGURED
+    # NOT_CONFIGURED is strictly reserved for environments where MongoDB is disabled/unconfigured.
     report_storage_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,

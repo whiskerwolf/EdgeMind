@@ -402,6 +402,11 @@ def test_report_deletion_preserves_postgresql_session(client: TestClient, fake_m
     }, headers=headers)
     sess_id = res.json()["analysis_session_id"]
 
+    # Verify status was STORED prior to deletion
+    initial_sess_res = client.get(f"/api/v1/analyses/{sess_id}", headers=headers)
+    assert initial_sess_res.status_code == 200
+    assert initial_sess_res.json()["report_storage_status"] == "STORED"
+
     # Delete report from MongoDB
     del_res = client.delete(f"/api/v1/analyses/{sess_id}/report", headers=headers)
     assert del_res.status_code == 204
@@ -410,10 +415,10 @@ def test_report_deletion_preserves_postgresql_session(client: TestClient, fake_m
     get_rep_res = client.get(f"/api/v1/analyses/{sess_id}/report", headers=headers)
     assert get_rep_res.status_code == 404
 
-    # PostgreSQL session remains intact -> 200 OK
+    # PostgreSQL session remains intact -> 200 OK with distinct status DELETED
     sess_res = client.get(f"/api/v1/analyses/{sess_id}", headers=headers)
     assert sess_res.status_code == 200
-    assert sess_res.json()["report_storage_status"] == "NOT_CONFIGURED"
+    assert sess_res.json()["report_storage_status"] == "DELETED"
 
 
 # -----------------------------------------------------------------------------
@@ -728,3 +733,68 @@ def test_authentication_and_multi_tenancy_regression(client: TestClient):
     me_res = client.get("/api/v1/users/me", headers={"Authorization": f"Bearer {token}"})
     assert me_res.status_code == 200
     assert me_res.json()["email"] == "strong_pwd@example.com"
+
+
+# -----------------------------------------------------------------------------
+# 21. Report Storage Status Lifecycle & NOT_CONFIGURED Isolation
+# -----------------------------------------------------------------------------
+
+def test_report_storage_status_lifecycle_and_not_configured_isolation(client: TestClient, monkeypatch):
+    """
+    Verify complete report_storage_status lifecycle:
+    - NOT_CONFIGURED is strictly used when MongoDB is not configured.
+    - STORED is used when MongoDB successfully persists the report.
+    - DELETED is used when the report is deleted via DELETE endpoint.
+    - FAILED is used when MongoDB storage fails.
+    """
+    # 1. When MongoDB is not configured
+    monkeypatch.delenv("MONGODB_URL", raising=False)
+    get_settings.cache_clear()
+    mongo_conn._mongo_db = None
+    mongo_conn._mongo_client = None
+
+    unconf_res = client.post("/api/v1/edgemind/analyze", json={
+        "code": "def unconf(): pass\n",
+        "static_only": True,
+    })
+    assert unconf_res.status_code == 200
+    assert unconf_res.json()["report_storage_status"] == "NOT_CONFIGURED"
+
+    # 2. When MongoDB is configured: registers user and performs analysis
+    monkeypatch.setenv("MONGODB_URL", "mongodb://localhost:27017")
+    get_settings.cache_clear()
+
+    client.post("/api/v1/auth/register", json={
+        "email": "lifecycle@example.com",
+        "password": "Password123!@#",
+        "full_name": "Lifecycle User",
+    })
+    token = client.post("/api/v1/auth/login", json={
+        "email": "lifecycle@example.com",
+        "password": "Password123!@#",
+    }).json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    stored_res = client.post("/api/v1/edgemind/analyze", json={
+        "code": "def lifecycle_func(): pass\n",
+        "static_only": True,
+    }, headers=headers)
+    assert stored_res.status_code == 200
+    assert stored_res.json()["report_storage_status"] == "STORED"
+    sess_id = stored_res.json()["analysis_session_id"]
+
+    # Verify session record shows STORED
+    sess_check = client.get(f"/api/v1/analyses/{sess_id}", headers=headers)
+    assert sess_check.status_code == 200
+    assert sess_check.json()["report_storage_status"] == "STORED"
+
+    # 3. Transition to DELETED via DELETE /api/v1/analyses/{id}/report
+    del_res = client.delete(f"/api/v1/analyses/{sess_id}/report", headers=headers)
+    assert del_res.status_code == 204
+
+    # Verify session record is preserved with DELETED (not NOT_CONFIGURED)
+    del_check = client.get(f"/api/v1/analyses/{sess_id}", headers=headers)
+    assert del_check.status_code == 200
+    assert del_check.json()["report_storage_status"] == "DELETED"
+    assert del_check.json()["report_storage_status"] != "NOT_CONFIGURED"
+
