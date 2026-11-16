@@ -3,6 +3,7 @@ EdgeMind Database Models Package.
 """
 
 from core.database.base import Base
+from core.database.models.analysis_report import AnalysisReport
 from core.database.models.analysis_session import AnalysisSession
 from core.database.models.problem import Problem
 from core.database.models.project import Project
@@ -16,5 +17,6 @@ __all__ = [
     "Project",
     "Problem",
     "AnalysisSession",
+    "AnalysisReport",
 ]
 

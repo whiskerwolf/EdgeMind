@@ -3,7 +3,7 @@ SQLAlchemy 2.0 AnalysisSession Model.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 import uuid
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Uuid
@@ -11,11 +11,17 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database.base import Base, TimestampMixin
 
+if TYPE_CHECKING:
+    from core.database.models.analysis_report import AnalysisReport
+    from core.database.models.problem import Problem
+    from core.database.models.project import Project
+    from core.database.models.user import User
+
 
 class AnalysisSession(Base, TimestampMixin):
     """
     AnalysisSession entity storing metadata and high-level metrics for an EdgeMind analysis.
-    Complex reports and candidate input payloads will reside in MongoDB in future phases.
+    Complex reports and candidate input payloads reside in the PostgreSQL JSONB analysis_reports table.
     """
     __tablename__ = "analysis_sessions"
 
@@ -74,7 +80,7 @@ class AnalysisSession(Base, TimestampMixin):
         default=0.0,
     )
     # Report storage lifecycle state: PENDING, STORED, FAILED, DELETED, NOT_CONFIGURED
-    # NOT_CONFIGURED is strictly reserved for environments where MongoDB is disabled/unconfigured.
+    # NOT_CONFIGURED is strictly reserved for environments where database persistence is disabled/unconfigured.
     report_storage_status: Mapped[str] = mapped_column(
         String(32),
         nullable=False,
@@ -95,6 +101,13 @@ class AnalysisSession(Base, TimestampMixin):
     problem: Mapped[Optional["Problem"]] = relationship(
         "Problem",
         back_populates="analysis_sessions",
+    )
+    report: Mapped[Optional["AnalysisReport"]] = relationship(
+        "AnalysisReport",
+        back_populates="session",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     def to_dict(self) -> Dict[str, Any]:

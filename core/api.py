@@ -36,15 +36,9 @@ from core.database.repositories import (
     AnalysisRepository,
     ProblemRepository,
     ProjectRepository,
-)
-from core.mongodb import (
     ReportRepository,
-    build_analysis_report_doc,
-    check_mongo_health,
-    close_mongo_client,
-    ensure_mongodb_indexes,
-    get_mongo_db,
 )
+from core.reports.builder import build_analysis_report_doc
 from core.routes import (
     analyses_router,
     auth_router,
@@ -92,23 +86,9 @@ async def lifespan(app: FastAPI):
                 f"Admin bootstrap check skipped or failed: {settings.sanitize_error(str(exc))}"
             )
 
-    # Initialize MongoDB and ensure indexes if enabled
-    if settings.is_mongodb_enabled:
-        mongo_db = get_mongo_db()
-        if mongo_db is not None:
-            try:
-                is_healthy = await check_mongo_health()
-                if is_healthy:
-                    await ensure_mongodb_indexes(mongo_db)
-            except Exception as exc:
-                logger.warning(
-                    f"MongoDB startup check/indexing skipped: {settings.sanitize_error(str(exc))}"
-                )
-
     yield
     # Gracefully dispose database connection pools on shutdown
     await close_db()
-    await close_mongo_client()
 
 
 app = FastAPI(
@@ -570,7 +550,7 @@ async def edgemind_analyze_endpoint(
 
             cfg = get_settings()
             user_id = current_user.id if current_user else None
-            initial_storage_status = "PENDING" if cfg.is_mongodb_enabled else "NOT_CONFIGURED"
+            initial_storage_status = "PENDING"
 
             session_record = await analysis_repo.create(
                 analysis_mode=analysis_mode,
@@ -586,35 +566,29 @@ async def edgemind_analyze_endpoint(
             )
             analysis_session_id = str(session_record.id)
 
-            # Persist full report document to MongoDB if enabled
-            if cfg.is_mongodb_enabled:
-                mongo_db = get_mongo_db()
-                if mongo_db is not None:
-                    try:
-                        report_repo = ReportRepository(mongo_db)
-                        report_doc = build_analysis_report_doc(
-                            report=report,
-                            session_id=analysis_session_id,
-                            user_id=str(user_id) if user_id else None,
-                            project_id=str(project_uuid) if project_uuid else None,
-                            problem_id=str(problem_id) if problem_id else None,
-                            problem_context=problem_context if isinstance(problem_context, dict) else None,
-                            language="python",
-                            duration_ms=duration_ms,
-                        )
-                        await report_repo.upsert_report(analysis_session_id, report_doc)
-                        session_record.report_storage_status = "STORED"
-                        await db.flush()
-                    except Exception as mongo_err:
-                        sanitized_m = settings.sanitize_error(str(mongo_err))
-                        logger.warning(
-                            f"Failed to persist report document to MongoDB (graceful degradation): {sanitized_m}"
-                        )
-                        session_record.report_storage_status = "FAILED"
-                        await db.flush()
-                else:
-                    session_record.report_storage_status = "FAILED"
-                    await db.flush()
+            # Persist full report document to PostgreSQL JSONB
+            try:
+                report_repo = ReportRepository(db)
+                report_doc = build_analysis_report_doc(
+                    report=report,
+                    session_id=analysis_session_id,
+                    user_id=str(user_id) if user_id else None,
+                    project_id=str(project_uuid) if project_uuid else None,
+                    problem_id=str(problem_id) if problem_id else None,
+                    problem_context=problem_context if isinstance(problem_context, dict) else None,
+                    language="python",
+                    duration_ms=duration_ms,
+                )
+                await report_repo.upsert_report(analysis_session_id, report_doc)
+                session_record.report_storage_status = "STORED"
+                await db.flush()
+            except Exception as report_err:
+                sanitized_m = settings.sanitize_error(str(report_err))
+                logger.warning(
+                    f"Failed to persist report document to database (graceful degradation): {sanitized_m}"
+                )
+                session_record.report_storage_status = "FAILED"
+                await db.flush()
 
             report_storage_status = session_record.report_storage_status
         except Exception as db_save_err:
@@ -623,13 +597,11 @@ async def edgemind_analyze_endpoint(
                 f"Failed to persist analysis session to database (graceful degradation): {sanitized}"
             )
             analysis_session_id = None
-            cfg = get_settings()
-            report_storage_status = "FAILED" if cfg.is_mongodb_enabled else "NOT_CONFIGURED"
+            report_storage_status = "FAILED"
 
     report["analysis_session_id"] = analysis_session_id
-    cfg = get_settings()
     if db is None:
-        report["report_storage_status"] = "FAILED" if cfg.is_mongodb_enabled else "NOT_CONFIGURED"
+        report["report_storage_status"] = "NOT_CONFIGURED"
     else:
         report["report_storage_status"] = report_storage_status
     return JSONResponse(status_code=200, content=report)

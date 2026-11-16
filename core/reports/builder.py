@@ -1,9 +1,9 @@
 """
-MongoDB Document Builder for EdgeMind Analysis Reports.
+Analysis Report Document Builder for EdgeMind.
 
-Transforms analysis results into standardized MongoDB document structures:
+Constructs standardized analysis report document structures for PostgreSQL JSONB:
 - Enforces canonical schema_version "1.0.0".
-- Maps PostgreSQL UUID foreign keys as standard string IDs.
+- Maps PostgreSQL UUID foreign keys as standard string IDs or UUIDs.
 - Permanently excludes passwords, JWTs, and full source code.
 - Preserves expected_output=None and is_expected_output_verified=False invariants.
 """
@@ -23,7 +23,7 @@ def build_analysis_report_doc(
     duration_ms: float = 0.0,
 ) -> Dict[str, Any]:
     """
-    Construct an analysis report document adhering to the Phase 4 schema.
+    Construct an analysis report document adhering to schema v1.0.0.
     """
     prob_ctx = problem_context or {}
     prob_title = str(prob_ctx.get("title") or "").strip()
@@ -70,7 +70,7 @@ def build_analysis_report_doc(
         "unresolved_constraints": ti_section.get("unresolved_constraints", []),
     }
 
-    now = datetime.now(timezone.utc)
+    now_iso = datetime.now(timezone.utc).isoformat()
     return {
         "analysis_session_id": str(session_id),
         "user_id": str(user_id) if user_id else None,
@@ -93,7 +93,7 @@ def build_analysis_report_doc(
         "coverage_gaps": coverage_gaps,
         "explanations": explanations,
         "analysis_metadata": analysis_metadata,
-        "created_at": now,
-        "updated_at": now,
+        "created_at": now_iso,
+        "updated_at": now_iso,
         "schema_version": "1.0.0",
     }

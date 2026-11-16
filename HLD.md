@@ -94,15 +94,35 @@ Responsibilities:
 
 The native host is not the analysis engine. It only assists with local service lifecycle management.
 
+**Operating System Security & Code Signing:**
+- On Windows systems with Smart App Control (SAC) enabled, custom compiled binaries like `edgemind_native_host.exe` require an Authenticode code-signing certificate for production distribution to avoid execution blocks (`WinError 4551`).
+- The EdgeMind extension architecture is resilient and designed with graceful degradation: if Native Messaging is blocked or unavailable, the extension automatically falls back to direct loopback HTTP polling (`http://127.0.0.1:8000/health`).
+
 ### 4.3 FastAPI Backend — `core/api.py`
 
 The backend exposes the HTTP interface used by the extension.
 
-Known service endpoints include:
-- `GET /health`
-- `POST /api/v1/edgemind/analyze`
+Service endpoints include:
+- **Health & Core Intelligence**:
+  - `GET /health` — Service availability check.
+  - `POST /api/v1/edgemind/analyze` — Static analysis, constraint parsing, and candidate generation with automated report persistence.
+- **Authentication & Multi-Tenancy**:
+  - `POST /api/v1/auth/register` — User registration with password complexity enforcement.
+  - `POST /api/v1/auth/login` — Authentication returning access and refresh token pair.
+  - `POST /api/v1/auth/refresh` — Single-use refresh token rotation with reuse detection.
+  - `POST /api/v1/auth/logout` — Token revocation.
+  - `GET /api/v1/users/me`, `PATCH /api/v1/users/me` — Profile retrieval and update.
+- **Projects & Analysis History**:
+  - `GET /api/v1/projects`, `POST /api/v1/projects` — Multi-tenant project workspace management.
+  - `GET /api/v1/analyses`, `GET /api/v1/analyses/{analysis_id}`, `POST /api/v1/analyses` — Session audit history.
+- **PostgreSQL JSONB Report Documents**:
+  - `GET /api/v1/analyses/{analysis_id}/report` — Full detailed test intelligence report document.
+  - `GET /api/v1/analyses/{analysis_id}/candidates` — Synthesized candidate pool and classification summaries.
+  - `GET /api/v1/analyses/{analysis_id}/coverage-gaps` — Boundary gaps and constraint breakdowns.
+  - `DELETE /api/v1/analyses/{analysis_id}/report` — Report deletion while preserving session audit metadata.
+  - `GET /api/v1/reports` — Paginated multi-tenant report history with user ownership isolation.
 
-The backend is configured to listen on `127.0.0.1:8000`. The health endpoint reports whether the EdgeMind API is available.
+The backend is configured to listen on `127.0.0.1:8000`.
 
 ### 4.4 Test Intelligence — `core/test_intelligence/`
 
@@ -119,6 +139,22 @@ Logical responsibilities include:
 ### 4.5 Static Code Hygiene
 
 Static code hygiene is presented separately from test-input intelligence. It provides static inspection information and must not be represented as a solution-correctness score.
+
+### 4.6 Database & Persistence Architecture — PostgreSQL 16 & JSONB Document Store
+
+EdgeMind implements a unified PostgreSQL 16 persistence architecture combining relational tables and native JSONB document storage:
+- **Relational Entities (`core/database/models/`)**: Manages structured accounts (`users`), tenant scopes (`projects`), catalog items (`problems`), and execution sessions (`analysis_sessions`).
+- **JSONB Document Store (`analysis_reports`)**: Stores full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics within native PostgreSQL `JSONB` columns (`report_data`), accelerated via a PostgreSQL GIN index (`USING gin (report_data jsonb_path_ops)`).
+- **Alembic Database Migrations (`migrations/versions/`)**: Sequential, reversible schema migrations (001 initial tables, 002 auth/multi-tenancy, 003 storage status, 004 PostgreSQL JSONB report store).
+- **Graceful Portability**: Employs SQLAlchemy 2.0 async engine with SQLite fallback (`aiosqlite` with SQLite JSON and PRAGMA foreign keys) for fast, zero-dependency local unit testing.
+
+### 4.7 Authentication, Authorization & Multi-Tenancy
+
+- **Password Security**: Uses Argon2id password hashing via `pwdlib`.
+- **Stateless Tokens**: RFC 7519 compliant JSON Web Tokens (HMAC-SHA256) with short-lived access tokens (~15m) and cryptographically tracked refresh token rotation (~7d) with automatic reuse detection and family revocation.
+- **Role-Based Access Control (RBAC)**: Supports `user` and `admin` roles.
+- **Tenant Isolation**: Analysis sessions, projects, and report documents are strictly scoped to the owning user. Non-admin cross-tenant accesses return HTTP 404 to prevent resource enumeration.
+- **Anonymous Extension Compatibility**: Supports unauthenticated Chrome extension analysis runs with null `user_id`, ensuring developer usability is never blocked.
 
 ## 5. Analysis Modes
 
@@ -155,7 +191,8 @@ When public examples are unavailable or insufficient:
 
 - **Browser:** Google Chrome with the unpacked Manifest V3 extension.
 - **Extension source:** `extension/edgemind/`.
-- **Backend:** Local Python/FastAPI process.
+- **Backend:** Local Python/FastAPI process (`core/api.py`).
+- **Database:** Local or containerized PostgreSQL 16 (`docker-compose.yml`) with in-memory SQLite (`aiosqlite`) fallback for isolated test execution.
 - **API address:** `http://127.0.0.1:8000`.
 - **Windows integration:** PowerShell lifecycle scripts and the configured Native Messaging host under `scripts/`.
 - **Repository:** https://github.com/whiskerwolf/EdgeMind
@@ -167,9 +204,12 @@ The original `extension/chrome/` directory is retained separately for legacy com
 - The API listens on loopback (`127.0.0.1`) rather than all network interfaces.
 - Chrome Native Messaging registration is scoped to the configured extension origin.
 - The native host is used for a narrow local startup/health-check purpose.
-- User-submitted code is inspected statically; it is not executed.
-- Synthesized candidate inputs are not executed.
-- Generated candidates carry unverified expected-output status.
+- User-submitted code is inspected statically; it is never executed.
+- Synthesized candidate inputs are never executed.
+- Generated candidates carry unverified expected-output status (`expected_output = None`, `is_expected_output_verified = False`).
+- User passwords are protected using Argon2id cryptographic hashing; tokens are validated via HMAC-SHA256 with single-use refresh token rotation.
+- Multi-tenant data isolation: all projects, sessions, and report documents require authorization and return HTTP 404 for unauthorized tenant lookups.
+- Privacy & data sanitization: raw user source code, passwords, JWTs, and authentication secrets are strictly scrubbed prior to report document persistence.
 - `VALID` means that supported constraints are satisfied; it does not mean that a solution has been tested or proven correct.
 
 ## 9. Reliability and Failure Handling
