@@ -30,9 +30,11 @@ def client():
     return TestClient(app)
 
 
-def test_settings_default_values():
-    """Verify Settings load with correct baseline defaults."""
-    settings = get_settings()
+def test_settings_default_values(monkeypatch):
+    """Verify Settings load with correct baseline defaults in isolation from local .env."""
+    for key in ("APP_NAME", "APP_VERSION", "PORT", "DEBUG", "STATIC_ONLY"):
+        monkeypatch.delenv(key, raising=False)
+    settings = Settings(_env_file=None)
     assert settings.app_name == "EdgeMind API"
     assert settings.app_version == "1.0.0"
     assert settings.static_only is True

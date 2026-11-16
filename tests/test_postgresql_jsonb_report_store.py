@@ -529,7 +529,9 @@ async def test_safe_uuid_normalization_and_malformed_input(async_session: AsyncS
 @pytest.mark.anyio
 async def test_live_postgresql_jsonb_and_gin_index_verification():
     """16. Verify native PostgreSQL JSONB and GIN index behavior when live PostgreSQL 16 is running."""
-    pg_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/edgemind")
+    from core.config import get_settings
+
+    pg_url = os.environ.get("DATABASE_URL") or get_settings().database_url or "postgresql+asyncpg://postgres:postgres@localhost:5432/edgemind"
     if not pg_url.startswith("postgresql"):
         pytest.skip("DATABASE_URL is not configured for PostgreSQL.")
 
