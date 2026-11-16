@@ -21,8 +21,7 @@ from core.database.models import User
 from core.database.repositories.analysis_repository import AnalysisRepository
 from core.database.repositories.problem_repository import ProblemRepository
 from core.database.repositories.project_repository import ProjectRepository
-from core.mongodb.connection import get_mongo_db
-from core.mongodb.repositories import ReportRepository
+from core.database.repositories.report_repository import ReportRepository
 from core.schemas import (
     AnalysisReportItemResponse,
     AnalysisSessionCreate,
@@ -41,6 +40,16 @@ def get_analysis_repo(db: Optional[AsyncSession] = Depends(get_db)) -> AnalysisR
             detail="Database persistence is not configured or currently unreachable.",
         )
     return AnalysisRepository(db)
+
+
+def get_report_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ReportRepository:
+    """Dependency ensuring active database session is available for report storage."""
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+    return ReportRepository(db)
 
 
 @router.get(
@@ -241,11 +250,12 @@ async def create_analysis_session(
 async def get_detailed_report(
     analysis_id: uuid.UUID,
     analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    report_repo: ReportRepository = Depends(get_report_repo),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve the full detailed analysis report document from MongoDB.
-    Verifies ownership via PostgreSQL before accessing MongoDB.
+    Retrieve the full detailed analysis report document from PostgreSQL JSONB store.
+    Verifies ownership via PostgreSQL before accessing report store.
     """
     session_rec = await analysis_repo.get_by_id(analysis_id)
     if not session_rec:
@@ -261,15 +271,7 @@ async def get_detailed_report(
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
 
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Document report storage is not configured or currently unreachable.",
-        )
-
-    report_repo = ReportRepository(mongo_db)
-    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    report_doc = await report_repo.get_report_by_session_id(analysis_id)
     if not report_doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -294,11 +296,12 @@ async def get_detailed_report(
 async def get_analysis_candidates(
     analysis_id: uuid.UUID,
     analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    report_repo: ReportRepository = Depends(get_report_repo),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve generated test candidates from MongoDB for a specific analysis session.
-    Verifies ownership via PostgreSQL before accessing MongoDB.
+    Retrieve generated test candidates from PostgreSQL JSONB store for a specific analysis session.
+    Verifies ownership via PostgreSQL before accessing report store.
     """
     session_rec = await analysis_repo.get_by_id(analysis_id)
     if not session_rec:
@@ -313,15 +316,7 @@ async def get_analysis_candidates(
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
 
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Document report storage is not configured or currently unreachable.",
-        )
-
-    report_repo = ReportRepository(mongo_db)
-    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    report_doc = await report_repo.get_report_by_session_id(analysis_id)
     if not report_doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -353,11 +348,12 @@ async def get_analysis_candidates(
 async def get_analysis_coverage_gaps(
     analysis_id: uuid.UUID,
     analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    report_repo: ReportRepository = Depends(get_report_repo),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Retrieve constraint and coverage gap details from MongoDB for an analysis session.
-    Verifies ownership via PostgreSQL before accessing MongoDB.
+    Retrieve constraint and coverage gap details from PostgreSQL JSONB store for an analysis session.
+    Verifies ownership via PostgreSQL before accessing report store.
     """
     session_rec = await analysis_repo.get_by_id(analysis_id)
     if not session_rec:
@@ -372,15 +368,7 @@ async def get_analysis_coverage_gaps(
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
 
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Document report storage is not configured or currently unreachable.",
-        )
-
-    report_repo = ReportRepository(mongo_db)
-    report_doc = await report_repo.get_report_by_session_id(str(analysis_id))
+    report_doc = await report_repo.get_report_by_session_id(analysis_id)
     if not report_doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -400,7 +388,7 @@ async def get_analysis_coverage_gaps(
     "/{analysis_id}/report",
     status_code=status.HTTP_204_NO_CONTENT,
     responses={
-        204: {"description": "Detailed report deleted from MongoDB, PostgreSQL session preserved"},
+        204: {"description": "Detailed report deleted from JSONB store, PostgreSQL session preserved"},
         401: {"model": ErrorResponse, "description": "Authentication required"},
         404: {"model": ErrorResponse, "description": "Analysis session not found"},
         422: {"model": ErrorResponse, "description": "Invalid UUID format"},
@@ -410,10 +398,11 @@ async def get_analysis_coverage_gaps(
 async def delete_analysis_report(
     analysis_id: uuid.UUID,
     analysis_repo: AnalysisRepository = Depends(get_analysis_repo),
+    report_repo: ReportRepository = Depends(get_report_repo),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Delete the detailed report document from MongoDB while preserving PostgreSQL session metadata.
+    Delete the detailed report document from PostgreSQL JSONB store while preserving session metadata.
     Updates report_storage_status to 'DELETED'.
     """
     session_rec = await analysis_repo.get_by_id(analysis_id)
@@ -429,15 +418,7 @@ async def delete_analysis_report(
             detail=f"Analysis session with ID '{analysis_id}' not found.",
         )
 
-    mongo_db = get_mongo_db()
-    if mongo_db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Document report storage is not configured or currently unreachable.",
-        )
-
-    report_repo = ReportRepository(mongo_db)
-    await report_repo.delete_report(str(analysis_id))
+    await report_repo.delete_report(analysis_id)
     await analysis_repo.update_storage_status(analysis_id, "DELETED")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

@@ -79,7 +79,12 @@ if (-not (Test-Path $exePath)) {
 }
 
 # 3. Generate Native Host Manifest JSON (Strict UTF-8 without BOM)
-$manifestPath = Join-Path $ScriptDir "com.edgemind.native_host.json"
+$appDataDir = Join-Path $env:LOCALAPPDATA "EdgeMind"
+if (-not (Test-Path $appDataDir)) {
+    New-Item -Path $appDataDir -ItemType Directory -Force | Out-Null
+}
+$installedManifestPath = Join-Path $appDataDir "com.edgemind.native_host.json"
+$localScriptManifestPath = Join-Path $ScriptDir "com.edgemind.native_host.json"
 $escapedExePath = $exePath.Replace("\", "\\")
 
 $manifestJson = @"
@@ -95,20 +100,25 @@ $manifestJson = @"
 "@
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-[System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
-Write-Host "[SUCCESS] Written manifest (UTF-8 without BOM): $manifestPath" -ForegroundColor Green
+# Write to local application directory for Chrome
+[System.IO.File]::WriteAllText($installedManifestPath, $manifestJson, $utf8NoBom)
+Write-Host "[SUCCESS] Written installed manifest to local app directory: $installedManifestPath" -ForegroundColor Green
 
-# 4. Register in Windows Registry (HKCU)
+# Also write to scripts/ directory for local workspace consistency
+[System.IO.File]::WriteAllText($localScriptManifestPath, $manifestJson, $utf8NoBom)
+Write-Host "[SUCCESS] Written local workspace manifest: $localScriptManifestPath" -ForegroundColor Green
+
+# 4. Register in Windows Registry (HKCU - scoped strictly to com.edgemind.native_host)
 $registryKeyPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host"
 
 if (-not (Test-Path $registryKeyPath)) {
     New-Item -Path $registryKeyPath -Force | Out-Null
 }
 
-Set-ItemProperty -Path $registryKeyPath -Name "(Default)" -Value $manifestPath
+Set-ItemProperty -Path $registryKeyPath -Name "(Default)" -Value $installedManifestPath
 Write-Host "[SUCCESS] Registered in HKCU Registry:" -ForegroundColor Green
 Write-Host "  Key   : $registryKeyPath" -ForegroundColor Green
-Write-Host "  Value : $manifestPath" -ForegroundColor Green
+Write-Host "  Value : $installedManifestPath" -ForegroundColor Green
 
 # 5. Diagnostic Self-Check
 Write-Host "`nRunning native host self-check..." -ForegroundColor Cyan

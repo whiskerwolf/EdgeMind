@@ -10,11 +10,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth.dependencies import get_current_active_user
+from core.database.connection import get_db
 from core.database.models import User
-from core.mongodb.connection import get_mongo_db
-from core.mongodb.repositories import ReportRepository
+from core.database.repositories.report_repository import ReportRepository
 from core.schemas import ErrorResponse
 
 router = APIRouter(prefix="/reports", tags=["Analysis Reports"])
@@ -26,6 +27,16 @@ class PaginatedReportsResponse(BaseModel):
     total: int = Field(default=0)
     skip: int = Field(default=0)
     limit: int = Field(default=50)
+
+
+def get_report_repo(db: Optional[AsyncSession] = Depends(get_db)) -> ReportRepository:
+    """Dependency ensuring active database session is available for report storage."""
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Document report storage is not configured or currently unreachable.",
+        )
+    return ReportRepository(db)
 
 
 @router.get(
@@ -43,27 +54,19 @@ async def list_reports(
     limit: int = Query(50, ge=1, le=100),
     project_id: Optional[uuid.UUID] = None,
     problem_slug: Optional[str] = None,
+    repo: ReportRepository = Depends(get_report_repo),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    List paginated analysis reports from MongoDB.
+    List paginated analysis reports from PostgreSQL JSONB store.
     Enforces user ownership isolation: ordinary users see only their own reports,
     while administrators can access reports across all tenants.
     """
-    db = get_mongo_db()
-    if db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Document report storage is not configured or currently unreachable.",
-        )
+    user_filter = None if current_user.role == "admin" else current_user.id
 
-    user_filter = None if current_user.role == "admin" else str(current_user.id)
-    proj_filter = str(project_id) if project_id else None
-
-    repo = ReportRepository(db)
     items, total = await repo.list_reports(
         user_id=user_filter,
-        project_id=proj_filter,
+        project_id=project_id,
         problem_slug=problem_slug,
         skip=skip,
         limit=limit,

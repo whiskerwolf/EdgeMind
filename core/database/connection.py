@@ -10,6 +10,8 @@ Provides:
 
 from contextlib import asynccontextmanager
 import logging
+import os
+import sys
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import (
@@ -44,18 +46,24 @@ def get_engine() -> Optional[AsyncEngine]:
         return None
 
     db_url = settings.database_url
-    # Configure pooling arguments depending on driver/dialect
+    # Configure pooling arguments depending on driver/dialect and test environment
     is_sqlite = db_url.startswith("sqlite")
+    is_test_env = (
+        settings.environment == "testing"
+        or os.environ.get("ENVIRONMENT") == "testing"
+        or "pytest" in sys.modules
+    )
 
     engine_kwargs = {
         "echo": settings.db_echo,
     }
 
-    if is_sqlite:
-        # SQLite in-memory or file testing
+    if is_sqlite or is_test_env:
+        # SQLite in-memory or test execution: use NullPool to avoid reusing
+        # pooled connections across different asyncio event loops
         engine_kwargs["poolclass"] = NullPool
     else:
-        # PostgreSQL / asyncpg connection pool settings
+        # PostgreSQL / asyncpg production connection pool settings
         engine_kwargs.update({
             "pool_size": settings.db_pool_size,
             "max_overflow": settings.db_max_overflow,
@@ -132,3 +140,16 @@ async def close_db():
         _engine = None
         _session_factory = None
 
+
+def dispose_engine():
+    """
+    Synchronously reset engine and factory references for test isolation.
+    """
+    global _engine, _session_factory
+    if _engine is not None:
+        try:
+            _engine.sync_engine.dispose()
+        except Exception:
+            pass
+        _engine = None
+        _session_factory = None

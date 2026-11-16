@@ -16,6 +16,36 @@ This document describes the main implementation units, their responsibilities, d
 EdgeMind/
 ├── core/
 │   ├── api.py
+│   ├── config.py
+│   ├── schemas.py
+│   ├── auth/
+│   │   ├── dependencies.py
+│   │   ├── router.py
+│   │   ├── schemas.py
+│   │   ├── security.py
+│   │   └── service.py
+│   ├── database/
+│   │   ├── base.py
+│   │   ├── connection.py
+│   │   ├── models/
+│   │   │   ├── user.py
+│   │   │   ├── project.py
+│   │   │   ├── problem.py
+│   │   │   ├── analysis_session.py
+│   │   │   └── analysis_report.py
+│   │   └── repositories/
+│   │       ├── user_repository.py
+│   │       ├── project_repository.py
+│   │       ├── problem_repository.py
+│   │       ├── analysis_repository.py
+│   │       └── report_repository.py
+│   ├── reports/
+│   │   └── builder.py
+│   ├── routes/
+│   │   ├── analyses.py
+│   │   ├── reports.py
+│   │   ├── projects.py
+│   │   └── problems.py
 │   └── test_intelligence/
 │       ├── models.py
 │       ├── constraint_parser.py
@@ -28,6 +58,13 @@ EdgeMind/
 │   │   ├── popup/
 │   │   └── scripts/
 │   └── chrome/                 # Legacy extension; kept separate
+├── migrations/
+│   ├── env.py
+│   └── versions/
+│       ├── 001_initial_schema.py
+│       ├── 002_auth_and_multi_tenancy.py
+│       ├── 003_report_storage_status.py
+│       └── 004_postgresql_jsonb_report_store.py
 ├── scripts/
 │   ├── start_edgemind_api.ps1
 │   ├── check_edgemind_api.ps1
@@ -130,6 +167,12 @@ The exact supported request and response fields are determined by the installed 
 
 The installer registers the native host for the current Windows user and associates it with the EdgeMind extension origin. The uninstaller removes the integration registration created by the installer.
 
+### 4.4 OS Security, Smart App Control & Code Signing
+
+- **Smart App Control (SAC) Enforcement**: On modern Windows 11 installations with Smart App Control (SAC) enabled, unsigned binaries lacking Microsoft cloud reputation are blocked by Windows Defender Application Control policies before process execution (`WinError 4551`).
+- **Production Authenticode Requirement**: For enterprise distribution, `edgemind_native_host.exe` must be signed with a trusted Authenticode code-signing certificate.
+- **Graceful HTTP Fallback**: When the native messaging host is unavailable or blocked by OS security policies, the EdgeMind extension degrades gracefully by directly polling the local API endpoint (`http://127.0.0.1:8000/health`) and interacting over standard HTTP.
+
 ## 5. Backend API Design
 
 ### 5.1 Health Check
@@ -159,6 +202,49 @@ The endpoint receives problem context assembled by the extension and returns the
 The logical request information includes available problem metadata, language, examples, constraints, and relevant code context when supplied.
 
 The logical response contains the detected context, analysis mode, parsed constraint information, coverage gaps, ranked candidates, candidate classifications, and static-analysis information where applicable.
+
+When persistence is enabled, the analysis result is automatically stored in the PostgreSQL `analysis_sessions` table, and the full detailed report document is persisted to the `analysis_reports` JSONB table with `report_storage_status = "STORED"`.
+
+### 5.3 Detailed Analysis Report Document
+
+- **Method:** `GET`
+- **Path:** `/api/v1/analyses/{analysis_id}/report`
+- **Status Codes:** `200 OK`, `401 Unauthorized`, `404 Not Found`, `422 Unprocessable Entity`, `503 Service Unavailable`
+
+Retrieves the complete analysis report document adhering to `schema_version: "1.0.0"`. Enforces tenant isolation: ordinary users can only access their own reports; administrators can view across all tenants. Returns HTTP 404 if the session ID is not found or owned by another tenant.
+
+### 5.4 Test Candidates Subresource
+
+- **Method:** `GET`
+- **Path:** `/api/v1/analyses/{analysis_id}/candidates`
+- **Status Codes:** `200 OK`, `401 Unauthorized`, `404 Not Found`, `422 Unprocessable Entity`, `503 Service Unavailable`
+
+Retrieves the synthesized test candidate pool, total counts, classification breakdowns (`VALID`, `ROBUSTNESS_PROBE`, `CONSTRAINT_VALIDITY_UNKNOWN`), candidate provenance metadata, and solver limitation disclaimers.
+
+### 5.5 Coverage Gaps Subresource
+
+- **Method:** `GET`
+- **Path:** `/api/v1/analyses/{analysis_id}/coverage-gaps`
+- **Status Codes:** `200 OK`, `401 Unauthorized`, `404 Not Found`, `422 Unprocessable Entity`, `503 Service Unavailable`
+
+Retrieves categorized boundary vulnerabilities, total detected gaps, formal parsed constraint specifications, and any unformalized semantic constraint strings.
+
+### 5.6 Delete Detailed Analysis Report
+
+- **Method:** `DELETE`
+- **Path:** `/api/v1/analyses/{analysis_id}/report`
+- **Status Codes:** `204 No Content`, `401 Unauthorized`, `404 Not Found`, `422 Unprocessable Entity`, `503 Service Unavailable`
+
+Deletes the detailed JSONB report document from `analysis_reports` while preserving the relational `analysis_sessions` row for audit integrity. Updates the parent session's `report_storage_status` to `"DELETED"` within the same database transaction.
+
+### 5.7 Paginated Analysis Reports
+
+- **Method:** `GET`
+- **Path:** `/api/v1/reports`
+- **Query Parameters:** `skip` (default 0), `limit` (default 50, max 100), `project_id` (optional UUID), `problem_slug` (optional string)
+- **Status Codes:** `200 OK`, `401 Unauthorized`, `503 Service Unavailable`
+
+Lists paginated analysis report documents sorted newest first (`created_at DESC`). Enforces tenant query filtering: normal users only retrieve reports where `user_id == current_user.id`; administrators retrieve reports across all tenants.
 
 ## 6. Intelligence Pipeline
 
@@ -309,3 +395,90 @@ Automated tests and manual browser checks should be reported separately. A passi
 5. Do not fabricate expected outputs.
 6. Scope Native Messaging registration to the intended extension origin.
 7. Keep native-host protocol output separate from diagnostic logging.
+
+## 13. Database Architecture & PostgreSQL JSONB Report Store
+
+### 13.1 PostgreSQL 16 Relational Schema
+
+The relational layer is managed asynchronously via SQLAlchemy 2.0 with `asyncpg` connection pooling:
+- `users`: User identity, Argon2id password hashes, RBAC roles (`user`, `admin`), activation status.
+- `refresh_tokens`: Cryptographic refresh token families, rotation tracking, revocation timestamps, client metadata.
+- `projects`: Multi-tenant project containers, programming language, technology stack metadata, user ownership foreign keys.
+- `problems`: Normalized LeetCode problem catalog indexed by unique `problem_slug`, title, platform, and difficulty.
+- `analysis_sessions`: High-level session execution logs, gap and candidate counts, execution duration, project/problem/user links, and `report_storage_status` (`PENDING`, `STORED`, `FAILED`, `DELETED`, `NOT_CONFIGURED`).
+
+### 13.2 AnalysisReport Model — `core/database/models/analysis_report.py`
+
+Stores detailed analysis reports, candidate edge-case pools, constraints, and coverage gaps:
+
+```python
+class AnalysisReport(Base, TimestampMixin):
+    __tablename__ = "analysis_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    analysis_session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("analysis_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    problem_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("problems.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    problem_slug: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    report_data: Mapped[Dict[str, Any]] = mapped_column(JSON().with_variant(JSONB, "postgresql"), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0.0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+```
+
+- **Relationships**: 1-to-1 relationship with `AnalysisSession` (`session.report`) with `cascade="all, delete-orphan"`.
+- **Serialization**: `to_dict()` canonicalizes top-level foreign keys, timestamps, and the nested `report_data` payload.
+
+### 13.3 Report Repository — `core/database/repositories/report_repository.py`
+
+Encapsulates all asynchronous SQLAlchemy 2.0 operations for `analysis_reports`:
+- `create_report`: Inserts a new report; raises `DuplicateReportError` on conflict.
+- `upsert_report`: Idempotently inserts or updates an existing report by `analysis_session_id`.
+- `get_report_by_session_id`: Fetches a report document by session UUID.
+- `list_reports`: Paginated query sorted newest first (`created_at DESC`) with multi-tenant filtering (`user_id`, `project_id`, `problem_slug`).
+- `update_report`: Safe partial field updates.
+- `delete_report`: Deletes report row and returns boolean deletion status.
+- **Safe UUID Normalization**: Converts strings, UUID objects, or malformed inputs into optional valid UUIDs without raising 500 exceptions.
+- **Exception Sanitization**: Database errors are wrapped in `ReportRepositoryError` with password and secret scrubbing.
+
+### 13.4 Alembic Migration 004 & GIN Indexing
+
+Migration `migrations/versions/004_postgresql_jsonb_report_store.py`:
+- **Chaining**: Downstream revision linked to parent `003_report_storage_status`.
+- **Table Definition**: Creates `analysis_reports` with foreign keys and unique constraint on `analysis_session_id`.
+- **PostgreSQL GIN Index**: Attaches a native Generalized Inverted Index on `report_data`:
+  ```sql
+  CREATE INDEX ix_analysis_reports_report_data_gin ON analysis_reports USING gin (report_data jsonb_path_ops);
+  ```
+  Accelerates JSON path expression queries (`@>`, `?`, `?&`) across complex candidate arrays and gap structures.
+- **Dialect Guard**: Skips GIN creation on SQLite to allow seamless in-memory test execution.
+- **Bidirectional Downgrade**: Drops GIN index, foreign keys, and table cleanly during downgrade operations.
+
+### 13.5 Authentication & Multi-Tenancy Isolation
+
+- **Password Security**: Argon2id hashing with randomized salts and parameter verification.
+- **Token Security**: HMAC-SHA256 JWT access tokens (~15m expiration) and single-use refresh token rotation (~7d expiration) with reuse detection and automated token family revocation.
+- **Tenant Scoping**: All report and session queries strictly enforce user ownership. Non-admin cross-tenant lookups return HTTP 404 to eliminate enumeration risks.
+- **Anonymous Extension Compatibility**: Analysis runs from unauthenticated browser sessions store reports with `user_id = None`, preserving local developer workflows.
+- **Static-Only Safety Invariant**: User source code, cookies, and tokens are scrubbed prior to document storage; candidate tests persistently enforce `expected_output = null` and `is_expected_output_verified = false`.

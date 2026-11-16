@@ -32,13 +32,13 @@ Originally engineered from advanced static analysis foundations, EdgeMind pairs 
 
 ```powershell
 # Navigate to the project directory
-cd c:\Users\HP\Downloads\Codedoctor
+cd <path-to-edgemind>
 
 # Activate existing virtual environment or create a new one
 .\.venv\Scripts\Activate.ps1
 
-# Install dependencies
-pip install -r requirements.txt
+# Install runtime dependencies (or requirements-dev.txt for development & testing)
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
 ---
@@ -153,6 +153,11 @@ To uninstall native messaging registration:
 powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_edgemind_native_messaging.ps1
 ```
 
+#### Windows Smart App Control (SAC) & Code-Signing Requirements
+- **Smart App Control Enforcement**: On Windows 11 systems with Smart App Control (SAC) or Windows Defender Application Control (WDAC) set to Enforce mode, unsigned or ad-hoc compiled binaries (such as `edgemind_native_host.exe`) may be intercepted by the operating system kernel (`WinError 4551`).
+- **Production Code Signing**: For enterprise or production deployment, the native host executable must be signed with a trusted Authenticode digital code-signing certificate.
+- **Graceful HTTP Fallback**: If Chrome Native Messaging is blocked or unavailable, the EdgeMind extension popup automatically falls back to direct local HTTP polling (`http://127.0.0.1:8000/health`). Users can run the backend via the Task Scheduler autostart (`install_edgemind_autostart.ps1`) or the Desktop shortcut with zero loss of functionality.
+
 ---
 
 ## HTTP API Documentation
@@ -253,9 +258,9 @@ Analyzes code against problem context and baseline test cases to discover test c
 
 ---
 
-## Persistence Architecture (PostgreSQL & MongoDB)
+## Persistence Architecture (PostgreSQL 16 & JSONB Document Store)
 
-EdgeMind employs a dual-database persistence design separating relational metadata and authorization from detailed analysis documents:
+EdgeMind employs a unified PostgreSQL 16 persistence architecture combining relational tables (for authorization, tenancy, and sessions) with native JSONB document storage (with GIN index acceleration) for detailed test intelligence analysis reports:
 
 | Concern | Primary Store | Storage Scope |
 |---|---|---|
@@ -263,26 +268,26 @@ EdgeMind employs a dual-database persistence design separating relational metada
 | **Projects & Tenancy** | PostgreSQL | Multi-tenant projects, user ownership links, creation/update timestamps. |
 | **Problem Catalog** | PostgreSQL | LeetCode problem slugs, titles, and difficulty metadata. |
 | **Analysis Metadata** | PostgreSQL | `analysis_sessions` table tracking timestamps, status, project/problem/user links, and `report_storage_status` (`PENDING`, `STORED`, `FAILED`, `DELETED`, `NOT_CONFIGURED`). |
-| **Analysis Reports & Artifacts** | MongoDB (`pymongo.AsyncMongoClient`) | `analysis_reports` collection storing full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics. |
+| **Analysis Reports & Artifacts** | PostgreSQL JSONB (`analysis_reports`) | Native JSONB document store with GIN index storing full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics. |
 
-### MongoDB Document Schema (`analysis_reports`)
+### PostgreSQL JSONB Document Schema (`analysis_reports`)
 
-Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0"`:
+Documents in the `analysis_reports` table adhere to `schema_version: "1.0.0"`:
 
 ```json
 {
-  "_id": "ObjectId(...)",
+  "id": "UUID (analysis_reports.id)",
   "schema_version": "1.0.0",
   "analysis_session_id": "UUID (matches PostgreSQL analysis_sessions.id)",
   "project_id": "UUID (optional, tenant isolation)",
   "user_id": "UUID (optional, tenant isolation)",
   "problem_slug": "string",
-  "created_at": "ISODate(...)",
+  "created_at": "ISO-8601 string",
+  "updated_at": "ISO-8601 string",
   "storage_metadata": {
     "engine_version": "1.0.0",
     "analysis_mode": "BASELINE_DRIVEN | CONTEXT_BASED",
-    "static_only": true,
-    "stored_at": "ISODate(...)"
+    "static_only": true
   },
   "identified_parameters": [...],
   "parsed_constraints": [...],
@@ -311,7 +316,7 @@ Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0
 > [!IMPORTANT]
 > **Safety Invariants**:
 > - Generated candidates strictly enforce `expected_output = null` and `is_expected_output_verified = false`. EdgeMind never executes code and never fabricates verified outputs.
-> - Source code, LeetCode DOM trees, cookies, and bearer tokens are strictly scrubbed prior to MongoDB persistence.
+> - Source code, LeetCode DOM trees, cookies, and bearer tokens are strictly scrubbed prior to report persistence.
 
 ---
 
@@ -320,7 +325,7 @@ Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0
 #### 1. Retrieve Complete Analysis Report
 - **Method**: `GET`
 - **Path**: `/api/v1/analyses/{analysis_id}/report`
-- **Auth**: Bearer Token required for private sessions. Returns the full MongoDB report document.
+- **Auth**: Bearer Token required for private sessions. Returns the full JSONB report document.
 
 #### 2. Retrieve Synthesized Test Candidates
 - **Method**: `GET`
@@ -340,7 +345,7 @@ Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0
 #### 5. Delete Analysis Document
 - **Method**: `DELETE`
 - **Path**: `/api/v1/analyses/{analysis_id}/report`
-- **Auth**: Bearer Token required. Safely removes the MongoDB document and updates the PostgreSQL session's `report_storage_status` to `"DELETED"`, preserving audit history.
+- **Auth**: Bearer Token required. Safely removes the JSONB report record and updates the PostgreSQL session's `report_storage_status` to `"DELETED"`, preserving audit history.
 
 ---
 
@@ -349,7 +354,7 @@ Documents in the `analysis_reports` collection adhere to `schema_version: "1.0.0
 A production-aligned local development environment is configured via `docker-compose.yml`:
 
 ```powershell
-# Start PostgreSQL 16 and MongoDB 7 in detached mode
+# Start PostgreSQL 16 in detached mode
 docker compose up -d
 
 # Check service health
@@ -357,9 +362,8 @@ docker compose ps
 ```
 
 - **PostgreSQL**: Accessible at `localhost:5432` (`edgemind` database).
-- **MongoDB**: Accessible at `localhost:27017` (`edgemind` database).
 
-When Docker is unavailable, EdgeMind gracefully operates with local SQLite and falls back safely if MongoDB is offline (`report_storage_status = "FAILED"` or `"NOT_CONFIGURED"`), ensuring the Chrome extension and core intelligence engine are never blocked.
+When Docker is unavailable, EdgeMind gracefully operates with local SQLite (`aiosqlite`) fallback, ensuring the Chrome extension and core intelligence engine are never blocked.
 
 
 The unpacked extension is located in `extension/edgemind/`.
@@ -371,7 +375,7 @@ The unpacked extension is located in `extension/edgemind/`.
 3. Click **Load unpacked**.
 4. Select the directory:
    ```text
-   C:\Users\HP\Downloads\Codedoctor\extension\edgemind
+   <path-to-project>\extension\edgemind
    ```
 5. Pin **EdgeMind** to the Chrome extensions toolbar.
 
@@ -416,7 +420,7 @@ Run specific test modules:
 # Database persistence & multi-tenancy tests
 .\.venv\Scripts\python.exe -m pytest tests/test_database_persistence.py tests/test_auth_multi_tenancy.py -v
 
-# MongoDB document store integration tests
-.\.venv\Scripts\python.exe -m pytest tests/test_mongodb_integration.py -v
+# PostgreSQL JSONB document store tests
+.\.venv\Scripts\python.exe -m pytest tests/test_postgresql_jsonb_report_store.py -v
 
 ```

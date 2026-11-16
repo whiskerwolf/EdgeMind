@@ -1,0 +1,3 @@
+# EdgeMind Development & Testing Dependencies
+-r requirements.txt
+pillow>=10.0.0
