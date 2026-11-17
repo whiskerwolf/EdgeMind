@@ -40,6 +40,7 @@ from core.database.repositories import (
 )
 from core.reports.builder import build_analysis_report_doc
 from core.routes import (
+    agent_router,
     analyses_router,
     auth_router,
     problems_router,
@@ -155,6 +156,7 @@ app.include_router(projects_router, prefix="/api/v1")
 app.include_router(problems_router, prefix="/api/v1")
 app.include_router(analyses_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
+app.include_router(agent_router, prefix="/api/v1")
 
 
 # -----------------------------------------------------------------------------

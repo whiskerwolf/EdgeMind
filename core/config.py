@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
 
+    # Multi-Step AI Agent & Tool Calling
+    agent_max_iterations: int = Field(default=5, description="Maximum iterative reasoning cycles for the multi-step agent")
+    agent_max_tool_calls: int = Field(default=15, description="Maximum total tool executions allowed per agent session")
+    agent_tool_timeout: float = Field(default=10.0, description="Per-tool execution timeout in seconds")
+    agent_session_timeout: float = Field(default=60.0, description="Maximum total wall-clock timeout for an agent session in seconds")
+
     # Database Settings (PostgreSQL / SQLAlchemy 2.0 Async)
     database_url: Optional[str] = Field(
         default=None,
