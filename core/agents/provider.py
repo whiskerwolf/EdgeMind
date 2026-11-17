@@ -126,6 +126,10 @@ class LiveAgentProvider(BaseAgentProvider):
     def name(self) -> str:
         return "live_llm"
 
+    def is_available(self) -> bool:
+        """Return True if an API key is configured for live AI reasoning."""
+        return bool(self._api_key and str(self._api_key).strip())
+
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
