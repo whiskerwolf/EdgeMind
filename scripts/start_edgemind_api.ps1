@@ -17,7 +17,8 @@
 param (
     [int]$Port = 8000,
     [string]$HostAddress = "127.0.0.1",
-    [int]$TimeoutSeconds = 15
+    [int]$TimeoutSeconds = 15,
+    [switch]$Silent
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,11 +38,13 @@ if (-not (Test-Path $LogsDir)) {
     New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
 }
 
-Write-Host "====================================================" -ForegroundColor DarkCyan
-Write-Host " EdgeMind Backend Launcher (FastAPI / Uvicorn)" -ForegroundColor Cyan
-Write-Host "====================================================" -ForegroundColor DarkCyan
-Write-Host "Project Root : $ProjectRoot"
-Write-Host "Target Host  : $HostAddress`:$Port"
+if (-not $Silent) {
+    Write-Host "====================================================" -ForegroundColor DarkCyan
+    Write-Host " EdgeMind Backend Launcher (FastAPI / Uvicorn)" -ForegroundColor Cyan
+    Write-Host "====================================================" -ForegroundColor DarkCyan
+    Write-Host "Project Root : $ProjectRoot"
+    Write-Host "Target Host  : $HostAddress`:$Port"
+}
 
 # 2. Verify Virtual Environment
 if (-not (Test-Path $PythonExe)) {
@@ -61,10 +64,12 @@ if ($existingConn) {
         $resp = Invoke-RestMethod -Uri $healthUri -Method Get -TimeoutSec 3 -ErrorAction Stop
         if ($resp -and $resp.status -eq "healthy") {
             Set-Content -Path $PidFile -Value $owningPid -Encoding utf8
-            Write-Host "[ALREADY RUNNING] EdgeMind API is already active and healthy on port $Port." -ForegroundColor Green
-            Write-Host "  PID    : $owningPid" -ForegroundColor Green
-            Write-Host "  Health : $healthUri" -ForegroundColor Green
-            Write-Host "Reusing existing background instance." -ForegroundColor Cyan
+            if (-not $Silent) {
+                Write-Host "[ALREADY RUNNING] EdgeMind API is already active and healthy on port $Port." -ForegroundColor Green
+                Write-Host "  PID    : $owningPid" -ForegroundColor Green
+                Write-Host "  Health : $healthUri" -ForegroundColor Green
+                Write-Host "Reusing existing background instance." -ForegroundColor Cyan
+            }
             exit 0
         }
     } catch {
@@ -116,18 +121,34 @@ foreach ($logFile in @($OutLog, $ErrLog)) {
 }
 
 # 6. Launch Uvicorn as Independent Detached Background Process
-# Using Win32_Process Create via cmd.exe redirection ensures process detachment from terminal job objects
-Write-Host "Launching Uvicorn background process..." -ForegroundColor Cyan
+# Using Win32_Process Create with Win32_ProcessStartup ShowWindow = 0 (SW_HIDE)
+# ensures process detachment and guarantees zero visible Command Prompt window.
+if (-not $Silent) {
+    Write-Host "Launching Uvicorn background process..." -ForegroundColor Cyan
+}
 
 $launchCmd = "cmd.exe /c `"`"$PythonExe`" -m uvicorn core.api:app --host $HostAddress --port $Port >> `"$OutLog`" 2>> `"$ErrLog`"`""
 
-$createResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-    CommandLine      = $launchCmd
-    CurrentDirectory = $ProjectRoot
+$retCode = 1
+try {
+    $wmiProcess = [wmiclass]"Win32_Process"
+    $wmiStartup = [wmiclass]"Win32_ProcessStartup"
+    $startupInfo = $wmiStartup.CreateInstance()
+    $startupInfo.ShowWindow = 0 # 0 = SW_HIDE
+
+    $createResult = $wmiProcess.Create($launchCmd, $ProjectRoot, $startupInfo)
+    $retCode = $createResult.ReturnValue
+} catch {
+    # Fallback if [wmiclass] accelerator is unavailable
+    $createResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+        CommandLine      = $launchCmd
+        CurrentDirectory = $ProjectRoot
+    }
+    $retCode = $createResult.ReturnValue
 }
 
-if ($createResult.ReturnValue -ne 0) {
-    Write-Host "[ERROR] Win32_Process Create failed with return code $($createResult.ReturnValue)." -ForegroundColor Red
+if ($retCode -ne 0) {
+    Write-Host "[ERROR] Process creation failed with return code $retCode." -ForegroundColor Red
     exit 1
 }
 
@@ -170,12 +191,14 @@ if ($isHealthy) {
     if ($serverPid -gt 0) {
         Set-Content -Path $PidFile -Value $serverPid -Encoding utf8
     }
-    Write-Host "[SUCCESS] EdgeMind API is online and healthy!" -ForegroundColor Green
-    Write-Host "  Endpoint   : http://$HostAddress`:$Port" -ForegroundColor Green
-    Write-Host "  Health URL : $healthUrl" -ForegroundColor Green
-    Write-Host "  PID        : $serverPid" -ForegroundColor Green
-    Write-Host "  Log File   : $OutLog" -ForegroundColor DarkGray
-    Write-Host "  Error Log  : $ErrLog" -ForegroundColor DarkGray
+    if (-not $Silent) {
+        Write-Host "[SUCCESS] EdgeMind API is online and healthy!" -ForegroundColor Green
+        Write-Host "  Endpoint   : http://$HostAddress`:$Port" -ForegroundColor Green
+        Write-Host "  Health URL : $healthUrl" -ForegroundColor Green
+        Write-Host "  PID        : $serverPid" -ForegroundColor Green
+        Write-Host "  Log File   : $OutLog" -ForegroundColor DarkGray
+        Write-Host "  Error Log  : $ErrLog" -ForegroundColor DarkGray
+    }
     exit 0
 } else {
     Write-Host "[ERROR] EdgeMind API failed to respond within $TimeoutSeconds seconds." -ForegroundColor Red

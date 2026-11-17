@@ -820,6 +820,48 @@ def test_api_status_badge_states():
     assert "status-pulse" in css
 
 
+def test_chrome_web_store_production_package():
+    """Verify that dist/edgemind-chrome-web-store.zip is properly packaged, contains all required MV3 files, and excludes prohibited developer files."""
+    import os
+    import zipfile
+    from scripts.package_extension import package_extension, ZIP_OUTPUT_PATH, SHA256_OUTPUT_PATH
+
+    summary = package_extension()
+    assert os.path.isfile(ZIP_OUTPUT_PATH)
+    assert os.path.isfile(SHA256_OUTPUT_PATH)
+
+    with zipfile.ZipFile(ZIP_OUTPUT_PATH, "r") as z:
+        names = z.namelist()
+        assert "manifest.json" in names
+        assert "popup/popup.html" in names
+        assert "popup/popup.js" in names
+        assert "popup/popup.css" in names
+        assert "scripts/background.js" in names
+        assert "scripts/content.js" in names
+        assert "scripts/extractor.js" in names
+        assert "icons/icon128.png" in names
+        assert "icons/icon16.png" in names
+
+        # Read manifest from zip
+        manifest_raw = z.read("manifest.json").decode("utf-8")
+        manifest = json.loads(manifest_raw)
+        assert manifest["manifest_version"] == 3
+        assert manifest["name"] == "EdgeMind"
+
+        # Check for prohibited files
+        prohibited = [
+            "generate_icons.py",
+            "README.md",
+            ".env",
+            "core/",
+            "tests/",
+            ".git",
+        ]
+        for name in names:
+            for p in prohibited:
+                assert not name.endswith(p) and p not in name, f"Prohibited file or folder in distribution package: {name}"
+            assert not name.endswith(".py"), f"Python file leaked into extension zip: {name}"
+
 
 
 

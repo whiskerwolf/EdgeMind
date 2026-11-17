@@ -204,7 +204,7 @@ namespace EdgeMind.NativeHost
             {
                 ProcessStartInfo psi = new ProcessStartInfo();
                 psi.FileName = "powershell.exe";
-                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\"";
+                psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + scriptPath + "\" -Silent";
                 psi.WorkingDirectory = s_projectRoot;
                 psi.CreateNoWindow = true;
                 psi.UseShellExecute = false;

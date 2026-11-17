@@ -17,6 +17,6 @@ If Not fso.FileExists(psScript) Then
 End If
 
 Set wshShell = CreateObject("WScript.Shell")
-cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psScript & """"
+cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & psScript & """ -Silent"
 wshShell.Run cmd, 0, False
 

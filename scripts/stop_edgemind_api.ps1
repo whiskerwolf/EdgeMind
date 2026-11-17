@@ -85,6 +85,18 @@ foreach ($tPid in $targetPids) {
                 }
             }
         } catch {}
+
+        # Check for parent cmd.exe launcher if present to avoid any lingering console host
+        try {
+            if ($cim -and $cim.ParentProcessId) {
+                $parentProc = Get-CimInstance Win32_Process -Filter "ProcessId = $($cim.ParentProcessId)" -ErrorAction SilentlyContinue
+                if ($parentProc -and $parentProc.Name -eq "cmd.exe" -and $parentProc.CommandLine -match "core\.api") {
+                    if (-not $pidsToKill.Contains($parentProc.ProcessId)) {
+                        $pidsToKill.Add($parentProc.ProcessId)
+                    }
+                }
+            }
+        } catch {}
     } else {
         Write-Host "[WARNING] Process $tPid is listening on port $Port but does not match EdgeMind command signature." -ForegroundColor Red
         Write-Host "  Command line: $cmdLine" -ForegroundColor DarkGray
