@@ -71,13 +71,18 @@ def test_native_messaging_manifest_validity():
 
     assert data.get("name") == "com.edgemind.native_host"
     assert data.get("type") == "stdio"
-    assert os.path.isabs(data.get("path")), "Executable path must be absolute"
-    assert "C:\\Users\\HP" not in data.get("path", ""), "Manifest contains non-portable hardcoded HP path"
-    assert os.path.isfile(data.get("path")), f"Executable not found at {data.get('path')}"
+    raw_path = data.get("path", "")
+    assert "C:\\Users\\HP" not in raw_path, "Manifest contains non-portable hardcoded HP path"
+    assert "C:\\Users\\DELL" not in raw_path, "Manifest contains non-portable hardcoded DELL path"
+
+    # Resolves to actual executable (relative to scripts/ or absolute path)
+    resolved_path = raw_path if os.path.isabs(raw_path) else os.path.join(SCRIPTS_DIR, raw_path)
+    assert os.path.isfile(resolved_path), f"Executable not found at {resolved_path}"
 
     allowed = data.get("allowed_origins", [])
     assert isinstance(allowed, list) and len(allowed) > 0, "allowed_origins must be a non-empty list"
     for origin in allowed:
+        assert "*" not in origin, f"Wildcards not allowed in origin: '{origin}'"
         assert CHROME_ORIGIN_REGEX.match(origin), (
             f"Invalid Chrome extension origin: '{origin}'. Expected format: 'chrome-extension://<32-char-id>/'"
         )
@@ -284,7 +289,6 @@ def test_native_host_stdio_length_prefixed_protocol():
         if proc.poll() is None:
             proc.kill()
 
-
 # ==============================================================================
 # Extension Manifest & Scripts Tests
 # ==============================================================================
@@ -311,3 +315,130 @@ def test_installer_and_uninstaller_scripts_exist():
 
     assert os.path.isfile(install_script), f"Installer script missing at {install_script}"
     assert os.path.isfile(uninstall_script), f"Uninstaller script missing at {uninstall_script}"
+
+
+def test_installer_temp_directory_with_spaces_and_no_registry(tmp_path):
+    """Verify that install script supports custom paths with spaces and does not touch real registry with -NoRegistry."""
+    import shutil
+    install_script = os.path.join(SCRIPTS_DIR, "install_edgemind_native_messaging.ps1")
+    uninstall_script = os.path.join(SCRIPTS_DIR, "uninstall_edgemind_native_messaging.ps1")
+
+    # Directory with spaces
+    install_dir = tmp_path / "EdgeMind Custom Space Directory"
+    install_dir.mkdir()
+    manifest_dir = install_dir / "manifests"
+    manifest_dir.mkdir()
+
+    # Place executable in custom directory
+    custom_exe = install_dir / "edgemind_native_host.exe"
+    shutil.copy2(EXE_PATH, custom_exe)
+    assert custom_exe.is_file()
+
+    # Run installer with -NoRegistry and custom paths
+    ps_cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", install_script,
+        "-ExecutablePath", str(custom_exe),
+        "-ManifestDir", str(manifest_dir),
+        "-NoRegistry",
+        "-Quiet",
+    ]
+    res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, f"Installer failed: {res.stderr}\n{res.stdout}"
+
+    # Verify generated manifest
+    installed_manifest = manifest_dir / "com.edgemind.native_host.json"
+    assert installed_manifest.is_file()
+
+    with open(installed_manifest, "r", encoding="utf-8") as f:
+        manifest_data = json.load(f)
+
+    assert manifest_data["name"] == "com.edgemind.native_host"
+    assert manifest_data["type"] == "stdio"
+    # Canonical path with spaces preserved
+    assert os.path.abspath(manifest_data["path"]) == os.path.abspath(str(custom_exe))
+    assert os.path.isfile(manifest_data["path"])
+    assert manifest_data["allowed_origins"] == ["chrome-extension://dcpgjneeokaigdhocommnadngnbaebgg/"]
+
+    # Run uninstaller targeting the custom directory
+    uninst_cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", uninstall_script,
+        "-ManifestDir", str(manifest_dir),
+        "-NoRegistry",
+        "-Quiet",
+    ]
+    uninst_res = subprocess.run(uninst_cmd, capture_output=True, text=True, timeout=30)
+    assert uninst_res.returncode == 0
+    assert not installed_manifest.exists()
+
+
+def test_installer_rejects_wildcard_extension_id(tmp_path):
+    """Verify that install script rejects wildcard and malformed extension IDs."""
+    install_script = os.path.join(SCRIPTS_DIR, "install_edgemind_native_messaging.ps1")
+    manifest_dir = tmp_path / "manifests"
+    manifest_dir.mkdir()
+
+    for invalid_id in ["*", "chrome-extension://*", "short_id", "invalid_with_numbers_1234567890123456789012"]:
+        ps_cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", install_script,
+            "-ExtensionId", invalid_id,
+            "-ManifestDir", str(manifest_dir),
+            "-NoRegistry",
+            "-Quiet",
+        ]
+        res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=15)
+        assert res.returncode != 0, f"Installer should reject invalid extension ID: {invalid_id}"
+
+
+def test_native_host_stdout_cleanliness_and_framing():
+    """Verify that stdout contains strictly 4-byte framed messages without any diagnostic or log text."""
+    assert os.path.isfile(EXE_PATH)
+    try:
+        proc = subprocess.Popen(
+            [EXE_PATH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 4551 or "Application Control" in str(exc):
+            pytest.skip("Native host blocked by Smart App Control (WinError 4551).")
+        raise
+
+    try:
+        msg = json.dumps({"action": "ping"}).encode("utf-8")
+        header = struct.pack("<I", len(msg))
+        proc.stdin.write(header + msg)
+        proc.stdin.flush()
+
+        # Read exact 4-byte header
+        resp_header = proc.stdout.read(4)
+        assert len(resp_header) == 4
+        resp_len = struct.unpack("<I", resp_header)[0]
+        assert 0 < resp_len <= 1024 * 1024
+
+        # Read exact payload
+        resp_body = proc.stdout.read(resp_len).decode("utf-8")
+        data = json.loads(resp_body)
+        assert data.get("status") == "PONG"
+        assert data.get("service") == "EdgeMind"
+
+        # Close stdin to trigger clean shutdown
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        assert proc.returncode == 0
+
+        # Verify stderr captured the logs rather than stdout
+        stderr_output = proc.stderr.read().decode("utf-8")
+        assert "EdgeMind Native Host started" in stderr_output or "EOF" in stderr_output
+    finally:
+        if proc.poll() is None:
+            proc.kill()

@@ -4,48 +4,66 @@
 
 .DESCRIPTION
     - Removes the registry key HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host.
-    - Removes scripts\com.edgemind.native_host.json.
+    - Removes installed com.edgemind.native_host.json.
     - Safely leaves project files, backend scripts, and extension intact.
+    - Supports automated testing via -ManifestDir, -RegistryKey, and -NoRegistry.
 #>
 
 [CmdletBinding()]
-param ()
+param (
+    [string]$ManifestDir = "",
+    [string]$RegistryKey = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host",
+    [switch]$NoRegistry,
+    [switch]$Quiet
+)
 
 $ErrorActionPreference = "Continue"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-Write-Host "====================================================" -ForegroundColor DarkCyan
-Write-Host " EdgeMind Native Messaging Uninstaller" -ForegroundColor Cyan
-Write-Host "====================================================" -ForegroundColor DarkCyan
-
-# 1. Remove Registry Key (strictly EdgeMind-owned)
-$registryKeyPath = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host"
-if (Test-Path $registryKeyPath) {
-    Remove-Item -Path $registryKeyPath -Recurse -Force
-    Write-Host "[SUCCESS] Removed registry key: $registryKeyPath" -ForegroundColor Green
-} else {
-    Write-Host "[INFO] Registry key was not present." -ForegroundColor Cyan
+if (-not $Quiet) {
+    Write-Host "====================================================" -ForegroundColor DarkCyan
+    Write-Host " EdgeMind Native Messaging Uninstaller" -ForegroundColor Cyan
+    Write-Host "====================================================" -ForegroundColor DarkCyan
 }
 
-# 2. Remove Manifest JSON from LocalAppData application directory
-$appDataDir = Join-Path $env:LOCALAPPDATA "EdgeMind"
-$installedManifest = Join-Path $appDataDir "com.edgemind.native_host.json"
+# 1. Remove Registry Key unless -NoRegistry
+if (-not $NoRegistry) {
+    if (Test-Path $RegistryKey) {
+        Remove-Item -Path $RegistryKey -Recurse -Force
+        if (-not $Quiet) {
+            Write-Host "[SUCCESS] Removed registry key: $RegistryKey" -ForegroundColor Green
+        }
+    } else {
+        if (-not $Quiet) {
+            Write-Host "[INFO] Registry key was not present: $RegistryKey" -ForegroundColor Cyan
+        }
+    }
+}
+
+# 2. Resolve Manifest Directory to clean up
+if ($ManifestDir) {
+    $targetDir = $ManifestDir
+} else {
+    $targetDir = Join-Path $env:LOCALAPPDATA "EdgeMind"
+}
+
+$installedManifest = Join-Path $targetDir "com.edgemind.native_host.json"
 if (Test-Path $installedManifest) {
     Remove-Item -Path $installedManifest -Force
-    Write-Host "[SUCCESS] Removed installed manifest file: $installedManifest" -ForegroundColor Green
-}
-if ((Test-Path $appDataDir) -and ((Get-ChildItem -Path $appDataDir).Count -eq 0)) {
-    Remove-Item -Path $appDataDir -Force
-    Write-Host "[SUCCESS] Removed empty app directory: $appDataDir" -ForegroundColor Green
+    if (-not $Quiet) {
+        Write-Host "[SUCCESS] Removed manifest file: $installedManifest" -ForegroundColor Green
+    }
 }
 
-# 3. Clean up scripts manifest if present
-$manifestPath = Join-Path $ScriptDir "com.edgemind.native_host.json"
-if (Test-Path $manifestPath) {
-    # Leave or reset template
-    Write-Host "[INFO] Project scripts manifest preserved." -ForegroundColor Cyan
+# Clean up directory if empty
+if ((Test-Path $targetDir) -and ((Get-ChildItem -Path $targetDir).Count -eq 0)) {
+    Remove-Item -Path $targetDir -Force
+    if (-not $Quiet) {
+        Write-Host "[SUCCESS] Removed empty directory: $targetDir" -ForegroundColor Green
+    }
 }
 
-Write-Host "`n[DONE] Native messaging integration uninstalled cleanly." -ForegroundColor Green
-
+if (-not $Quiet) {
+    Write-Host "`n[DONE] Native messaging integration uninstalled cleanly." -ForegroundColor Green
+}
