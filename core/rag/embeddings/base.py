@@ -34,6 +34,11 @@ class BaseEmbeddingProvider(ABC):
         pass
 
     @property
+    def is_mock(self) -> bool:
+        """Return True if this provider is a synthetic mock (not a live external LLM API)."""
+        return self.provider_name.lower() == "mock"
+
+    @property
     @abstractmethod
     def model_name(self) -> str:
         """Embedding model identifier (e.g. 'text-embedding-3-small')."""

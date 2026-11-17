@@ -455,6 +455,8 @@ async def retrieve_knowledge_context_handler(
         "total_retrieved": result.total_retrieved,
         "chunks": [c.to_dict() for c in result.chunks],
         "embedding_model": result.embedding_model,
+        "embedding_provider": result.embedding_provider,
+        "is_mock": result.is_mock,
         "execution_duration_ms": result.execution_duration_ms,
         "message": (
             f"Retrieved {result.total_retrieved} relevant knowledge chunks for query '{result.query}'."

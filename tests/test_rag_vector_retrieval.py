@@ -607,3 +607,42 @@ async def test_agent_retrieval_provenance_tracking(sqlite_test_engine):
         assert retrieved_chunk["title"] == "Binary Search Invariant"
         assert retrieved_chunk["source_uri"] == "https://edgemind.internal/algorithms/binary-search"
         assert retrieved_chunk["similarity_score"] > 0.0
+
+
+@pytest.mark.anyio
+async def test_explicit_provider_distinction_mock_vs_live():
+    """Verify RAG explicitly distinguishes MockEmbeddingProvider from live OpenAI provider."""
+    mock_prov = MockEmbeddingProvider()
+    assert mock_prov.provider_name == "mock"
+    assert mock_prov.is_mock is True
+    assert mock_prov.model_name == "mock-embedding-v1"
+
+    live_prov = OpenAIEmbeddingProvider(api_key="test-key")
+    assert live_prov.provider_name == "openai"
+    assert live_prov.is_mock is False
+    assert live_prov.model_name == "text-embedding-3-small"
+
+    # Service with mock provider records is_mock=True in result and to_dict()
+    service = VectorRetrievalService(embedding_provider=mock_prov)
+    res = await service.retrieve("search query")
+    assert res.embedding_provider == "mock"
+    assert res.is_mock is True
+    data = res.to_dict()
+    assert data["embedding_provider"] == "mock"
+    assert data["is_mock"] is True
+
+    # Tool execution handler advertises provider name and is_mock
+    from core.agents.tools import retrieve_knowledge_context_handler
+    from core.agents.schemas import RetrieveKnowledgeContextArgs
+    handler_out = await retrieve_knowledge_context_handler(
+        args=RetrieveKnowledgeContextArgs(query="test query"),
+        context={"embedding_provider": mock_prov},
+    )
+    assert handler_out["embedding_provider"] == "mock"
+    assert handler_out["is_mock"] is True
+
+    # Live provider with missing key raises explicit error rather than silently returning mock vectors
+    unauth_prov = OpenAIEmbeddingProvider(api_key="")
+    assert unauth_prov.is_available() is False
+    with pytest.raises(EmbeddingProviderUnavailableError):
+        await unauth_prov.embed_text("test")

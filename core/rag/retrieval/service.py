@@ -56,6 +56,8 @@ class RetrievalResult:
     total_retrieved: int
     execution_duration_ms: float
     embedding_model: str
+    embedding_provider: str = "mock"
+    is_mock: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -66,6 +68,8 @@ class RetrievalResult:
             "total_retrieved": self.total_retrieved,
             "execution_duration_ms": round(self.execution_duration_ms, 2),
             "embedding_model": self.embedding_model,
+            "embedding_provider": self.embedding_provider,
+            "is_mock": self.is_mock,
         }
 
 
@@ -127,6 +131,8 @@ class VectorRetrievalService:
                 total_retrieved=0,
                 execution_duration_ms=duration,
                 embedding_model=self.embedding_provider.model_name,
+                embedding_provider=self.embedding_provider.provider_name,
+                is_mock=self.embedding_provider.is_mock,
             )
 
         # Truncate query if excessive to prevent embedding DoS
@@ -147,6 +153,8 @@ class VectorRetrievalService:
                 total_retrieved=0,
                 execution_duration_ms=duration,
                 embedding_model=self.embedding_provider.model_name,
+                embedding_provider=self.embedding_provider.provider_name,
+                is_mock=self.embedding_provider.is_mock,
             )
 
         # 2. If database is not attached (or in-memory mock context)
@@ -160,6 +168,8 @@ class VectorRetrievalService:
                 total_retrieved=0,
                 execution_duration_ms=duration,
                 embedding_model=self.embedding_provider.model_name,
+                embedding_provider=self.embedding_provider.provider_name,
+                is_mock=self.embedding_provider.is_mock,
             )
 
         # 3. Query repository
@@ -199,4 +209,6 @@ class VectorRetrievalService:
             total_retrieved=len(retrieved),
             execution_duration_ms=duration,
             embedding_model=self.embedding_provider.model_name,
+            embedding_provider=self.embedding_provider.provider_name,
+            is_mock=self.embedding_provider.is_mock,
         )

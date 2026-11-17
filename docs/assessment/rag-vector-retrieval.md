@@ -128,12 +128,33 @@ def get_embedding_column_type(dimensions: int = 1536):
 - On **PostgreSQL**: Employs native `vector(1536)` with `<=>` cosine distance operator and HNSW indexing (`ix_knowledge_chunks_embedding_hnsw`).
 - On **SQLite / Testing Engine**: Falls back to `JSON` for portable in-memory unit and integration tests without external C libraries.
 
-### Infrastructure Status & Migration Path
+### Infrastructure Status & Safe Migration Path
 - **pgvector Python Library**: Installed (`pgvector==0.5.1`).
-- **PostgreSQL 16 Engine**: Configured in `docker-compose.yml` via `${POSTGRES_IMAGE:-pgvector/pgvector:pg16-alpine}`.
-  - Safe Migration Note: Using the Alpine variant (`pgvector/pgvector:pg16-alpine`) preserves full musl libc binary compatibility with existing `postgres:16-alpine` database data directories, avoiding collation version mismatch errors.
-  - For existing databases: operators can run `pg_dump` before updating the container image, then execute `alembic upgrade head` to enable `CREATE EXTENSION IF NOT EXISTS vector;` and create the HNSW vector index.
-- **Offline / Local Testing**: When the local Docker daemon is offline, EdgeMind's repository gracefully handles vector search via in-memory cosine ranking, while maintaining verified PostgreSQL SQL compilation guarantees.
+- **PostgreSQL 16 Server Image**: Pinned to the official, verified release in `docker-compose.yml`:
+  `pgvector/pgvector:0.8.7-pg16`
+- **Debian vs Alpine Invariant**:
+  - `pgvector/pgvector:0.8.7-pg16` is built on official Debian Bookworm (`glibc`).
+  - The legacy EdgeMind database volume was initialized using `postgres:16-alpine` (`musl libc`).
+  - Attempting to directly mount an Alpine-initialized PostgreSQL data directory into a Debian PostgreSQL container risks locale / collation corruption or fatal startup errors (`database cluster was initialized with collation version ...`).
+  - **Zero-Data-Loss Safety Policy**:
+    - The original `postgres_data` volume is **never deleted or modified**.
+    - A dedicated separate volume `postgres_pgvector_data` is configured.
+- **Nine-Step Safe Logical Migration Procedure**:
+  1. **Logical Backup**: Export existing data: `docker exec edgemind-postgres pg_dump -U postgres edgemind > edgemind_backup_alpine.sql`
+  2. **Preserve Original Volume**: Leave `postgres_data` intact for instantaneous rollback.
+  3. **Provision Dedicated Volume**: Spin up `postgres_pgvector_data` using `pgvector/pgvector:0.8.7-pg16`.
+  4. **Logical Restore**: Import into new Debian-based cluster: `docker exec -i edgemind-postgres psql -U postgres edgemind < edgemind_backup_alpine.sql`
+  5. **Verify Data Integrity**: Confirm existing problems, projects, users, analysis_sessions, and analysis_reports match row counts.
+  6. **Enable Extension**: Execute `CREATE EXTENSION IF NOT EXISTS vector;`.
+  7. **Apply Migration 005**: Run `alembic upgrade head` to construct `knowledge_documents`, `knowledge_chunks`, and the HNSW vector index.
+  8. **Verify Vector Operations**: Insert test embeddings and confirm database-side `<=>` cosine distance ordering.
+  9. **Verify JSONB Report Functionality**: Confirm existing report routes, GIN indexes, and schemas operate without regression.
+- **Offline / Local Testing**: If the Docker daemon is offline, migration must NOT be attempted; EdgeMind gracefully runs automated tests using its dialect-aware SQLite engine and verified PostgreSQL SQL compilation assertions.
+
+### Provider Distinction: Mock vs. Live
+- **Explicit Provider Labeling**: `MockEmbeddingProvider` explicitly reports `provider_name="mock"`, `model_name="mock-embedding-v1"`, and `is_mock=True`.
+- **No Silent Fallback**: `OpenAIEmbeddingProvider` reports `provider_name="openai"` and `is_mock=False`. If API credentials are missing or invalid, `OpenAIEmbeddingProvider` raises `EmbeddingProviderUnavailableError` or `EmbeddingError` directly; it **never silently pretends** to generate live embeddings or masquerades as a live provider when using synthetic vectors.
+- **Audit Transparency**: `RetrievalResult.to_dict()` and `retrieve_knowledge_context` responses return `"embedding_provider"` and `"is_mock"` in their serialized payloads for audit visibility.
 
 ---
 
