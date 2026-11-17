@@ -151,6 +151,52 @@ class KnowledgeRepository:
         await self.session.flush()
         return db_doc
 
+    def build_postgres_search_query(
+        self,
+        query_embedding: List[float],
+        user_id: Optional[uuid.UUID] = None,
+        project_id: Optional[uuid.UUID] = None,
+        top_k: int = 3,
+        similarity_threshold: float = 0.5,
+    ):
+        """
+        Construct PostgreSQL query utilizing pgvector's <=> cosine distance operator.
+        Enforces tenant isolation in SQL WHERE prior to database-side ORDER BY and LIMIT.
+        """
+        if user_id is not None:
+            tenant_condition = or_(
+                KnowledgeChunk.is_global.is_(True),
+                KnowledgeChunk.user_id == user_id,
+            )
+        else:
+            tenant_condition = KnowledgeChunk.is_global.is_(True)
+
+        distance_expr = KnowledgeChunk.embedding.cosine_distance(query_embedding)
+        max_distance = 1.0 - similarity_threshold
+
+        stmt = (
+            select(KnowledgeChunk, distance_expr.label("distance"))
+            .options(selectinload(KnowledgeChunk.document))
+            .where(tenant_condition)
+            .where(KnowledgeChunk.embedding.isnot(None))
+        )
+
+        if project_id is not None:
+            stmt = stmt.where(
+                or_(
+                    KnowledgeChunk.is_global.is_(True),
+                    KnowledgeChunk.project_id == project_id,
+                    KnowledgeChunk.user_id == user_id,
+                )
+            )
+
+        # Database-side similarity threshold filter
+        stmt = stmt.where(distance_expr <= max_distance)
+
+        # Database-side cosine distance ordering (nearest first) and top-k limit
+        stmt = stmt.order_by(distance_expr.asc()).limit(top_k)
+        return stmt
+
     async def search_chunks(
         self,
         query_embedding: List[float],
@@ -161,10 +207,46 @@ class KnowledgeRepository:
     ) -> List[Tuple[KnowledgeChunk, float]]:
         """
         Search vector store for chunks matching query_embedding, enforcing tenant isolation.
+        On PostgreSQL with pgvector, executes genuine database-side cosine distance (<=>)
+        ordering and top-k selection. On SQLite/other dialects, falls back to in-memory cosine ranking.
         Returns list of (KnowledgeChunk, similarity_score) sorted descending by similarity.
         """
         if not query_embedding:
             return []
+
+        # Determine if database dialect is PostgreSQL with pgvector support
+        dialect_name = ""
+        bind = self.session.bind
+        if bind is not None:
+            dialect_name = getattr(bind.dialect, "name", "")
+        else:
+            try:
+                bind = self.session.get_bind()
+                dialect_name = getattr(bind.dialect, "name", "")
+            except Exception:
+                dialect_name = ""
+
+        is_postgres = dialect_name == "postgresql"
+
+        if is_postgres and hasattr(KnowledgeChunk.embedding, "cosine_distance"):
+            try:
+                pg_stmt = self.build_postgres_search_query(
+                    query_embedding=query_embedding,
+                    user_id=user_id,
+                    project_id=project_id,
+                    top_k=top_k,
+                    similarity_threshold=similarity_threshold,
+                )
+                result = await self.session.execute(pg_stmt)
+                rows = result.all()
+                scored_chunks: List[Tuple[KnowledgeChunk, float]] = []
+                for chunk, dist in rows:
+                    sim = round(1.0 - float(dist), 6)
+                    scored_chunks.append((chunk, sim))
+                return scored_chunks
+            except Exception:
+                # Fall back to in-memory ranking if database-side pgvector execution fails
+                pass
 
         # Build tenant isolation filter
         # Rule: A user can access:

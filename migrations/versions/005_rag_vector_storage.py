@@ -155,8 +155,21 @@ def upgrade() -> None:
         unique=False,
     )
 
+    # 4. Create HNSW vector index for cosine similarity if pgvector is active
+    if is_postgres and has_pgvector:
+        op.execute(
+            sa.text(
+                "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_embedding_hnsw "
+                "ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);"
+            )
+        )
+
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.execute(sa.text("DROP INDEX IF EXISTS ix_knowledge_chunks_embedding_hnsw;"))
+
     op.drop_index("ix_knowledge_chunks_doc_chunk", table_name="knowledge_chunks")
     op.drop_index("ix_knowledge_chunks_tenant_scope", table_name="knowledge_chunks")
     op.drop_index(op.f("ix_knowledge_chunks_content_hash"), table_name="knowledge_chunks")

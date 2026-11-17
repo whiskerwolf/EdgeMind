@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: ${POSTGRES_IMAGE:-pgvector/pgvector:pg16-alpine}
     container_name: edgemind-postgres
     restart: unless-stopped
     environment:

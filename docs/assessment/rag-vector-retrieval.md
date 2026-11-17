@@ -122,15 +122,18 @@ In `core/database/models/knowledge_chunk.py`:
 ```python
 def get_embedding_column_type(dimensions: int = 1536):
     if PGVECTOR_AVAILABLE and Vector is not None:
-        return JSON().with_variant(Vector(dimensions), "postgresql")
+        return Vector(dimensions).with_variant(JSON(), "sqlite")
     return JSON()
 ```
-- On **PostgreSQL**: Employs native `vector(1536)` with `<=>` cosine distance operator and HNSW indexing.
+- On **PostgreSQL**: Employs native `vector(1536)` with `<=>` cosine distance operator and HNSW indexing (`ix_knowledge_chunks_embedding_hnsw`).
 - On **SQLite / Testing Engine**: Falls back to `JSON` for portable in-memory unit and integration tests without external C libraries.
 
-### Infrastructure Status Disclosure
+### Infrastructure Status & Migration Path
 - **pgvector Python Library**: Installed (`pgvector==0.5.1`).
-- **PostgreSQL 16 Engine**: Configured in `docker-compose.yml`. During offline development environments (when Docker Desktop is inactive), the system gracefully uses SQLite in-memory engine for automated test passes while maintaining full migration compatibility (`005_rag_vector_storage.py`).
+- **PostgreSQL 16 Engine**: Configured in `docker-compose.yml` via `${POSTGRES_IMAGE:-pgvector/pgvector:pg16-alpine}`.
+  - Safe Migration Note: Using the Alpine variant (`pgvector/pgvector:pg16-alpine`) preserves full musl libc binary compatibility with existing `postgres:16-alpine` database data directories, avoiding collation version mismatch errors.
+  - For existing databases: operators can run `pg_dump` before updating the container image, then execute `alembic upgrade head` to enable `CREATE EXTENSION IF NOT EXISTS vector;` and create the HNSW vector index.
+- **Offline / Local Testing**: When the local Docker daemon is offline, EdgeMind's repository gracefully handles vector search via in-memory cosine ranking, while maintaining verified PostgreSQL SQL compilation guarantees.
 
 ---
 
@@ -190,30 +193,35 @@ When the agent invokes the retrieval tool:
 
 ---
 
-## 9. Automated Test Suite (18 Tests)
+## 9. Automated Test Suite (23 Tests)
 
-Located at [tests/test_rag_vector_retrieval.py](file:///C:/Users/DELL/Projects/EdgeMind/tests/test_rag_vector_retrieval.py):
+Located at [tests/test_rag_vector_retrieval.py](file:///C:/Users/DELL/Projects/EdgeMind/tests/test_rag_vector_retrieval.py) and [tests/test_rag_live_postgres.py](file:///C:/Users/DELL/Projects/EdgeMind/tests/test_rag_live_postgres.py):
 
-| Test Name | Validated Behavior |
-| :--- | :--- |
-| `test_text_chunking` | Verifies chunk length constraints and boundary splitting |
-| `test_chunk_overlap` | Verifies consecutive chunks share overlapping tokens |
-| `test_content_hashing_sha256` | Verifies SHA-256 determinism and sensitivity |
-| `test_chunking_invalid_parameters` | Rejects non-positive chunk size and overlap $\ge$ size |
-| `test_mock_embedding_provider_deterministic_similarity` | Verifies unit vectors and identical text similarity = 1.0 |
-| `test_embedding_dimension_validation` | Rejects non-positive vector dimensions |
-| `test_live_embedding_provider_request_parsing` | Validates OpenAI JSON payload formatting via MockTransport |
-| `test_embedding_provider_failure_handling` | Tests HTTP 401, 429, timeouts, and credential redaction |
-| `test_missing_embedding_credentials_handling` | Ensures provider is marked unavailable when keys are absent |
-| `test_vector_insertion_and_persistence` | Tests repository document and chunk storage with foreign keys |
-| `test_duplicate_document_handling_content_hash` | Idempotent upsert avoiding duplicate root documents |
-| `test_similarity_ranking_descending` | Verifies chunks are returned sorted by cosine similarity |
-| `test_top_k_retrieval_limits` | Verifies top_k limits returned chunks |
-| `test_similarity_threshold_filtering` | Excludes chunks below similarity threshold |
-| `test_empty_knowledge_base_retrieval` | Gracefully returns empty list without errors |
-| `test_tenant_isolation_cross_user_rejection` | Proves User 2 cannot access User 1's private knowledge |
-| `test_agent_retrieval_tool_integration` | Verifies agent invokes `retrieve_knowledge_context` |
-| `test_agent_retrieval_provenance_tracking` | Confirms retrieved chunks are recorded in test intelligence |
+| Test Name | Test File | Validated Behavior |
+| :--- | :--- | :--- |
+| `test_text_chunking` | `test_rag_vector_retrieval.py` | Verifies chunk length constraints and boundary splitting |
+| `test_chunk_overlap` | `test_rag_vector_retrieval.py` | Verifies consecutive chunks share overlapping tokens |
+| `test_content_hashing_sha256` | `test_rag_vector_retrieval.py` | Verifies SHA-256 determinism and sensitivity |
+| `test_chunking_invalid_parameters` | `test_rag_vector_retrieval.py` | Rejects non-positive chunk size and overlap $\ge$ size |
+| `test_mock_embedding_provider_deterministic_similarity` | `test_rag_vector_retrieval.py` | Verifies unit vectors and identical text similarity = 1.0 |
+| `test_embedding_dimension_validation` | `test_rag_vector_retrieval.py` | Rejects non-positive vector dimensions |
+| `test_live_embedding_provider_request_parsing` | `test_rag_vector_retrieval.py` | Validates OpenAI JSON payload formatting via MockTransport |
+| `test_embedding_provider_failure_handling` | `test_rag_vector_retrieval.py` | Tests HTTP 401, 429, timeouts, and credential redaction |
+| `test_missing_embedding_credentials_handling` | `test_rag_vector_retrieval.py` | Ensures provider is marked unavailable when keys are absent |
+| `test_vector_insertion_and_persistence` | `test_rag_vector_retrieval.py` | Tests repository document and chunk storage with foreign keys |
+| `test_duplicate_document_handling_content_hash` | `test_rag_vector_retrieval.py` | Idempotent upsert avoiding duplicate root documents |
+| `test_similarity_ranking_descending` | `test_rag_vector_retrieval.py` | Verifies chunks are returned sorted by cosine similarity |
+| `test_top_k_retrieval_limits` | `test_rag_vector_retrieval.py` | Verifies top_k limits returned chunks |
+| `test_similarity_threshold_filtering` | `test_rag_vector_retrieval.py` | Excludes chunks below similarity threshold |
+| `test_empty_knowledge_base_retrieval` | `test_rag_vector_retrieval.py` | Gracefully returns empty list without errors |
+| `test_tenant_isolation_cross_user_rejection` | `test_rag_vector_retrieval.py` | Proves User 2 cannot access User 1's private knowledge |
+| `test_agent_retrieval_tool_integration` | `test_rag_vector_retrieval.py` | Verifies agent invokes `retrieve_knowledge_context` |
+| `test_agent_retrieval_provenance_tracking` | `test_rag_vector_retrieval.py` | Confirms retrieved chunks are recorded in test intelligence |
+| `test_postgres_vector_query_operator_compilation` | `test_rag_live_postgres.py` | Verifies SQL compiles pgvector `<=>` cosine distance operator |
+| `test_tenant_filtering_precedes_top_k_selection_in_sql` | `test_rag_live_postgres.py` | Verifies SQL `WHERE` tenant condition precedes `ORDER BY` and `LIMIT` |
+| `test_embedding_column_dialect_compilation` | `test_rag_live_postgres.py` | Verifies column compiles to `vector(1536)` on PG and `JSON` on SQLite |
+| `test_migration_005_contains_pgvector_and_hnsw_definitions` | `test_rag_live_postgres.py` | Verifies extension, HNSW index, and downgrade script |
+| `test_live_postgres_vector_pipeline` | `test_rag_live_postgres.py` | Live PostgreSQL integration test (skipped when engine offline) |
 
 ---
 

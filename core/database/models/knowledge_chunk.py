@@ -35,7 +35,7 @@ def get_embedding_column_type(dimensions: int = 1536):
     Uses pgvector Vector on PostgreSQL if available, otherwise falls back to JSON.
     """
     if PGVECTOR_AVAILABLE and Vector is not None:
-        return JSON().with_variant(Vector(dimensions), "postgresql")
+        return Vector(dimensions).with_variant(JSON(), "sqlite")
     return JSON()
 
 
