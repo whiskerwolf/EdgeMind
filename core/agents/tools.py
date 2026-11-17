@@ -34,6 +34,7 @@ from core.agents.schemas import (
     ParseConstraintsArgs,
     RankCandidateInputsArgs,
     RetrieveExistingAnalysisArgs,
+    RetrieveKnowledgeContextArgs,
     ValidateCandidateInputsArgs,
 )
 from core.service import (
@@ -417,6 +418,52 @@ def rank_candidate_inputs_handler(
     }
 
 
+async def retrieve_knowledge_context_handler(
+    args: RetrieveKnowledgeContextArgs,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Perform semantic vector retrieval from the EdgeMind knowledge store."""
+    db = context.get("db") if context else None
+    current_user = context.get("current_user") if context else None
+    user_id = getattr(current_user, "id", None) if current_user else None
+    project_id = context.get("project_id") if context else None
+    if project_id and isinstance(project_id, str):
+        try:
+            project_id = uuid.UUID(project_id)
+        except (ValueError, TypeError):
+            project_id = None
+    embedding_provider = context.get("embedding_provider") if context else None
+
+    from core.rag.retrieval.service import VectorRetrievalService
+
+    retrieval_service = VectorRetrievalService(
+        db=db,
+        embedding_provider=embedding_provider,
+    )
+
+    result = await retrieval_service.retrieve(
+        query=args.query,
+        user_id=user_id,
+        project_id=project_id,
+        top_k=args.top_k or 3,
+        similarity_threshold=args.similarity_threshold if args.similarity_threshold is not None else 0.4,
+    )
+
+    return {
+        "status": "success",
+        "query": result.query,
+        "total_retrieved": result.total_retrieved,
+        "chunks": [c.to_dict() for c in result.chunks],
+        "embedding_model": result.embedding_model,
+        "execution_duration_ms": result.execution_duration_ms,
+        "message": (
+            f"Retrieved {result.total_retrieved} relevant knowledge chunks for query '{result.query}'."
+            if result.total_retrieved > 0
+            else "No relevant knowledge context found matching query threshold."
+        ),
+    }
+
+
 def create_default_tool_registry() -> ToolRegistry:
     """Instantiate and populate the standard EdgeMind Tool Registry."""
     registry = ToolRegistry()
@@ -474,6 +521,14 @@ def create_default_tool_registry() -> ToolRegistry:
         description="Score, deduplicate, and select the top candidate test cases maximizing gap coverage, diversity, and constraint adherence.",
         args_model=RankCandidateInputsArgs,
         handler=rank_candidate_inputs_handler,
+        timeout_seconds=5.0,
+    )
+
+    registry.register(
+        name="retrieve_knowledge_context",
+        description="Perform semantic vector retrieval from the EdgeMind knowledge base to discover relevant algorithmic patterns, standard edge-case checklists, and domain invariants.",
+        args_model=RetrieveKnowledgeContextArgs,
+        handler=retrieve_knowledge_context_handler,
         timeout_seconds=5.0,
     )
 

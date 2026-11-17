@@ -90,10 +90,10 @@ def test_tool_registry_registration_and_schemas():
     assert "raw_constraints" in s["function"]["parameters"]["properties"]
 
 
-def test_default_tool_registry_contains_7_analytical_tools():
-    """Verify all 7 native static analysis tools are registered by default."""
+def test_default_tool_registry_contains_registered_tools():
+    """Verify all 8 native static analysis and retrieval tools are registered by default."""
     tools = default_tool_registry.list_tools()
-    assert len(tools) == 7
+    assert len(tools) == 8
     names = {t.name for t in tools}
     expected = {
         "parse_problem_constraints",
@@ -103,6 +103,7 @@ def test_default_tool_registry_contains_7_analytical_tools():
         "generate_candidate_inputs",
         "validate_candidate_inputs",
         "rank_candidate_inputs",
+        "retrieve_knowledge_context",
     }
     assert names == expected
 

@@ -182,6 +182,28 @@ class RetrieveExistingAnalysisArgs(BaseModel):
     )
 
 
+class RetrieveKnowledgeContextArgs(BaseModel):
+    """Arguments for the retrieve_knowledge_context vector RAG tool."""
+    query: str = Field(
+        ...,
+        min_length=2,
+        max_length=2000,
+        description="Semantic search query describing the algorithmic concept, pattern, or edge-case context to retrieve",
+    )
+    top_k: Optional[int] = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Maximum number of relevant knowledge chunks to retrieve",
+    )
+    similarity_threshold: Optional[float] = Field(
+        default=0.4,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity score threshold for relevance",
+    )
+
+
 class GenerateCandidateInputsArgs(BaseModel):
     """Arguments for the generate_candidate_inputs tool."""
     test_cases: List[Dict[str, Any]] = Field(

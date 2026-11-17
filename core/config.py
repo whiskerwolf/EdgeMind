@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     agent_tool_timeout: float = Field(default=10.0, description="Per-tool execution timeout in seconds")
     agent_session_timeout: float = Field(default=60.0, description="Maximum total wall-clock timeout for an agent session in seconds")
 
+    # Retrieval-Augmented Generation (RAG) & Vector Storage
+    rag_embedding_model: str = Field(default="text-embedding-3-small", description="Default RAG embedding model identifier")
+    rag_embedding_dimensions: int = Field(default=1536, description="Vector dimension size for embeddings")
+    rag_chunk_size: int = Field(default=500, description="Default character chunk size for document processing")
+    rag_chunk_overlap: int = Field(default=50, description="Default character overlap size between consecutive chunks")
+    rag_top_k: int = Field(default=3, description="Default top-k retrieved chunks")
+    rag_similarity_threshold: float = Field(default=0.4, description="Default cosine similarity threshold for vector retrieval")
+
     # Database Settings (PostgreSQL / SQLAlchemy 2.0 Async)
     database_url: Optional[str] = Field(
         default=None,
