@@ -1,229 +1,304 @@
 # EdgeMind — High-Level Design (HLD)
 
-**Product:** EdgeMind — Adaptive Test Intelligence  
-**Release:** v1.0.0  
-**Document status:** Project submission
+**Product:** EdgeMind — Adaptive Test Intelligence
+**Release:** v1.0.0 (Assessment Evaluation Candidate)
+**Document Status:** Complete Architecture & Implementation Baseline
+**Repository:** https://github.com/whiskerwolf/EdgeMind
 
 ---
 
 ## 1. Introduction
 
-This document describes the high-level architecture of EdgeMind, a Chrome Manifest V3 extension backed by a local FastAPI service. The system analyzes programming-problem context and proposes ranked edge-case input candidates using static, constraint-aware processing.
+This document details the high-level architecture of EdgeMind, an adaptive test intelligence system that assists software engineers and students in thoroughly testing algorithmic code. Delivered as a Manifest V3 Google Chrome extension backed by an asynchronous local FastAPI service, EdgeMind combines static code analysis, an autonomous multi-step AI agent, retrieval-augmented generation (RAG) over algorithmic reference data, and unified PostgreSQL 16 relational, JSONB, and pgvector storage.
 
-## 2. Architecture Goals
+---
 
-- Separate browser-page detection, user interface, API orchestration, and intelligence logic.
-- Keep the backend local to the user's machine.
-- Make constraint extraction and candidate generation modular and testable.
-- Preserve the invariant that user code and generated candidate inputs are not executed.
-- Communicate uncertainty and unverified expected outputs explicitly.
+## 2. Architecture Goals & Invariants
 
-## 3. System Context
+1. **Separation of Concerns**: Decouple browser DOM extraction, presentation, API orchestration, iterative AI reasoning, semantic vector search, and persistence.
+2. **Zero Code Execution**: Maintain a strict static-only safety model (`static_only = True`). User-submitted code and synthesized test inputs are **never executed** (`eval()`, `exec()`, or subshells are forbidden).
+3. **Truthfulness & Provenance**: Generated test candidates have unverified expected outputs (`expected_output = None`, `is_expected_output_verified = False`). Every retrieved RAG chunk and agent tool call is tracked in a structured audit trail.
+4. **Locality & Privacy**: Bind the API strictly to loopback (`127.0.0.1:8000`). All user code, credentials, and tokens are scrubbed via `Settings.sanitize_error` before persistence or logging.
+5. **Multi-Tenant Security**: Isolate user workspaces, projects, analysis sessions, reports, and private knowledge chunks using compound SQL predicates.
+6. **Dialect Portability**: Target production PostgreSQL 16 with native JSONB GIN indexing and pgvector HNSW vector search, while providing a pure-Python SQLite fallback (`aiosqlite` with JSON) for zero-dependency CI testing.
 
-```text
-+------------------------- Chrome --------------------------+
-|                                                           |
-|  Programming Problem Page                                 |
-|       |                                                   |
-|       v                                                   |
-|  EdgeMind Content Scripts ---> Problem Context             |
-|       |                                                   |
-|       v                                                   |
-|  EdgeMind Popup <------> Background Service Worker         |
-|                               |                           |
-|                               | Chrome Native Messaging   |
-+-------------------------------|---------------------------+
-                                v
-                    EdgeMind Native Host
-                                |
-                                | starts/checks local service
-                                v
-                    FastAPI Backend
-                    127.0.0.1:8000
-                                |
-             +------------------+-------------------+
-             |                  |                   |
-             v                  v                   v
-       Context/Example     Test Intelligence    Static Code
-         Processing           Pipeline          Hygiene
-                                |
-             +------------------+-------------------+
-             |                  |                   |
-             v                  v                   v
-       Constraint Parser   Gap Detector       Candidate Models
-                                |
-                                v
-                         Candidate Synthesizer
-                                |
-                                v
-                           Candidate Ranker
-                                |
-                                v
-                         Analysis Response
-                                |
-                                v
-                         EdgeMind Popup
+---
+
+## 3. Overall System Architecture
+
+```mermaid
+flowchart TD
+    subgraph ClientLayer [Browser Client Layer - Manifest V3]
+        WebPage[Coding Platform DOM / Problem Page] --> ContentScript[Content Scripts: DOM Extractor]
+        ContentScript --> PopupUI[EdgeMind Popup UI: HTML/JS/CSS]
+        PopupUI <--> BackgroundWorker[Background Service Worker: background.js]
+        BackgroundWorker <--> NativeHost[C# Native Messaging Host: edgemind_native_host.exe]
+    end
+
+    subgraph ServiceLayer [Local Service Layer - FastAPI 127.0.0.1:8000]
+        NativeHost -.->|Process Lifecycle / Health Check| APIRouter[FastAPI App: core/api.py]
+        PopupUI <-->|HTTP REST / JWT Auth| APIRouter
+
+        APIRouter --> AuthRouter[Auth & User Management: core/auth/]
+        APIRouter --> StaticEngine[Deterministic Test Intelligence: core/test_intelligence/]
+        APIRouter --> AgentRouter[Agent Analysis Route: core/routes/agent.py]
+    end
+
+    subgraph IntelligenceLayer [AI Agent & RAG Pipeline Layer]
+        AgentRouter --> AgentOrchestrator[Agent Orchestrator: core/agents/orchestrator.py]
+        AgentOrchestrator <--> AgentProvider[LLM Provider Adapter: Mock / Live Provider]
+        AgentOrchestrator <--> ToolRegistry[Tool Registry: 8 Deterministic Tools]
+
+        ToolRegistry --> RAGService[Vector Retrieval Service: core/rag/retrieval/]
+        RAGService <--> EmbedProvider[Embedding Provider: Mock / OpenAI Provider]
+        RAGService <--> KnowledgeRepo[Knowledge Repository: core/database/repositories/]
+    end
+
+    subgraph PersistenceLayer [Persistence Layer - PostgreSQL 16 & pgvector]
+        KnowledgeRepo <--> PGVectorTable[(knowledge_chunks: Vector 1536 / HNSW)]
+        KnowledgeRepo <--> PGCatalog[(knowledge_documents: Metadata & Hash)]
+
+        APIRouter <--> ReportRepo[Report Repository: core/database/repositories/]
+        ReportRepo <--> PGJSONB[(analysis_reports: JSONB & GIN Index)]
+        ReportRepo <--> PGRelational[(users, projects, problems, analysis_sessions)]
+    end
 ```
 
-## 4. Major Components
+---
 
-### 4.1 Chrome Extension — `extension/edgemind/`
+## 4. Component Architecture
 
-The Manifest V3 extension is the user-facing layer.
+### 4.1 Chrome Extension (`extension/edgemind/`)
+- **Manifest V3 Architecture**: Adheres strictly to modern Chrome extension standards (`manifest.json`), eliminating persistent background pages in favor of an event-driven background service worker (`background.js`).
+- **DOM Problem Extraction**: Detects supported problem pages (e.g. LeetCode), parsing problem title, difficulty, visible example inputs, parameter names, and programming language.
+- **Resilient UI**: The popup displays backend connectivity, extracted constraints, detected coverage gaps, prioritized edge-case candidates, and static code quality metrics.
+- **Safety Invariant UI**: Explicitly labels synthesized edge cases with a visible disclaimer confirming expected outputs are unverified.
 
-Responsibilities:
-- Detect supported problem pages and read relevant page context.
-- Identify the selected programming language where available.
-- Present extracted examples, constraints, coverage gaps, and candidate inputs.
-- Request analysis from the local API.
-- Display connection state and analysis results.
-- Summarize large inputs and provide access to their full representation.
+### 4.2 Native Messaging Host (`scripts/`)
+- **Lifecycle Bridge**: An unprivileged C# binary (`edgemind_native_host.exe`) registered in the Windows Registry (`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.edgemind.native_host`).
+- **Framing Protocol**: Communicates using Chrome's 4-byte little-endian length-prefixed JSON protocol over `stdin`/`stdout`.
+- **Silent Lifecycle Management**: Launches the FastAPI backend silently via PowerShell scripts (`start_edgemind_api.ps1`) without flashing command prompt windows.
+- **Graceful HTTP Fallback**: If Native Messaging is blocked by Windows Smart App Control (SAC) or enterprise policy, the extension automatically degrades to direct loopback HTTP polling (`http://127.0.0.1:8000/health`).
 
-The extension includes a background service worker and uses Chrome Native Messaging for the configured backend-startup integration.
+### 4.3 FastAPI Backend Service (`core/api.py`)
+- Exposes structured REST endpoints on `127.0.0.1:8000` with CORS restricted to local dev servers and Chrome extension origins (`chrome-extension://*`).
+- Structured sub-routers:
+  - `/api/v1/auth`: Registration, login, token refresh, and logout.
+  - `/api/v1/edgemind/analyze`: Fast deterministic static analysis and edge-case generation.
+  - `/api/v1/agent/analyze`: Autonomous multi-step AI agent reasoning and tool orchestration.
+  - `/api/v1/reports`: Paginated JSONB analysis report documents with tenant isolation.
+  - `/api/v1/analyses`: Analysis session management and detailed subresources (`/candidates`, `/coverage-gaps`).
+  - `/api/v1/projects`: Multi-tenant project workspace organization.
 
-### 4.2 Native Messaging Host — `scripts/`
+---
 
-The native host provides a controlled bridge between the Chrome extension and Windows startup scripts.
+## 5. Multi-Step AI Agent Architecture
 
-Responsibilities:
-- Accept messages using Chrome's length-prefixed JSON Native Messaging protocol.
-- Check whether the local API is healthy.
-- Request startup of the existing backend when required.
-- Return a structured success or failure response.
-- Keep diagnostic output out of the protocol's standard-output stream.
+The multi-step AI agent (`core/agents/`) executes an iterative reasoning loop where an LLM evaluates problem constraints, plans investigative steps, invokes deterministic analysis tools, and synthesizes candidate test cases.
 
-The native host is not the analysis engine. It only assists with local service lifecycle management.
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Chrome Extension / User
+    participant Router as core/routes/agent.py
+    participant Orchestrator as core/agents/orchestrator.py
+    participant Provider as BaseAgentProvider (Mock / Live)
+    participant Registry as core/agents/tools.py (8 Tools)
+    participant RAG as core/rag/retrieval/service.py
+    participant DB as PostgreSQL 16 (JSONB & pgvector)
 
-**Operating System Security & Code Signing:**
-- On Windows systems with Smart App Control (SAC) enabled, custom compiled binaries like `edgemind_native_host.exe` require an Authenticode code-signing certificate for production distribution to avoid execution blocks (`WinError 4551`).
-- The EdgeMind extension architecture is resilient and designed with graceful degradation: if Native Messaging is blocked or unavailable, the extension automatically falls back to direct loopback HTTP polling (`http://127.0.0.1:8000/health`).
+    Client->>Router: POST /api/v1/agent/analyze (Code, Problem Context)
+    Router->>Router: Authenticate JWT & Validate Project Ownership
+    Router->>Orchestrator: run(AgentAnalyzeRequest)
 
-### 4.3 FastAPI Backend — `core/api.py`
+    loop Agent Reasoning Cycles (Iter 1..10)
+        Orchestrator->>Provider: generate_step(messages, tools)
+        alt LLM Requests Tool Execution
+            Provider-->>Orchestrator: AgentStepResult (tool_calls=[...])
+            loop For Each Tool Call
+                Orchestrator->>Registry: execute(tool_name, arguments)
+                alt Tool is retrieve_knowledge_context
+                    Registry->>RAG: retrieve(query, tenant_scope)
+                    RAG->>DB: SQL Cosine Search (<=>, HNSW)
+                    DB-->>RAG: Matched Chunks & Scores
+                    RAG-->>Registry: Retrieved Knowledge Context
+                else Other Deterministic Tools
+                    Registry->>Registry: Execute Parser / Synthesizer / Gap Detector
+                end
+                Registry-->>Orchestrator: ToolExecutionRecord (Result / Status)
+                Orchestrator->>Orchestrator: Append tool result message & accumulate state
+            end
+        else LLM Emits Final Answer
+            Provider-->>Orchestrator: AgentStepResult (content="...", finish_reason="stop")
+            Orchestrator->>Orchestrator: Synthesize final report & break loop
+        end
+    end
 
-The backend exposes the HTTP interface used by the extension.
+    Orchestrator->>DB: Persist AnalysisSession & AnalysisReport (JSONB)
+    Orchestrator-->>Router: AgentAnalyzeResponse (Report, Audit Trail, Provenance)
+    Router-->>Client: 200 OK (Structured Test Intelligence)
+```
 
-Service endpoints include:
-- **Health & Core Intelligence**:
-  - `GET /health` — Service availability check.
-  - `POST /api/v1/edgemind/analyze` — Static analysis, constraint parsing, and candidate generation with automated report persistence.
-- **Authentication & Multi-Tenancy**:
-  - `POST /api/v1/auth/register` — User registration with password complexity enforcement.
-  - `POST /api/v1/auth/login` — Authentication returning access and refresh token pair.
-  - `POST /api/v1/auth/refresh` — Single-use refresh token rotation with reuse detection.
-  - `POST /api/v1/auth/logout` — Token revocation.
-  - `GET /api/v1/users/me`, `PATCH /api/v1/users/me` — Profile retrieval and update.
-- **Projects & Analysis History**:
-  - `GET /api/v1/projects`, `POST /api/v1/projects` — Multi-tenant project workspace management.
-  - `GET /api/v1/analyses`, `GET /api/v1/analyses/{analysis_id}`, `POST /api/v1/analyses` — Session audit history.
-- **PostgreSQL JSONB Report Documents**:
-  - `GET /api/v1/analyses/{analysis_id}/report` — Full detailed test intelligence report document.
-  - `GET /api/v1/analyses/{analysis_id}/candidates` — Synthesized candidate pool and classification summaries.
-  - `GET /api/v1/analyses/{analysis_id}/coverage-gaps` — Boundary gaps and constraint breakdowns.
-  - `DELETE /api/v1/analyses/{analysis_id}/report` — Report deletion while preserving session audit metadata.
-  - `GET /api/v1/reports` — Paginated multi-tenant report history with user ownership isolation.
+### 5.1 Tool Registry (`core/agents/tools.py`)
+Encapsulates 8 isolated, deterministic functions with strict Pydantic argument schemas:
+1. `parse_problem_constraints`: Extracts parameter bounds, array length limits, and character set invariants.
+2. `analyze_problem_structure`: Analyzes AST structures, signatures, and input parameter mappings.
+3. `detect_coverage_gaps`: Discovers omitted lower/upper bounds, zero/negative cases, and empty sets.
+4. `generate_candidate_inputs`: Synthesizes candidate inputs for identified coverage gaps.
+5. `rank_candidate_inputs`: Heuristically prioritizes candidates and prunes redundant test inputs.
+6. `validate_candidate_inputs`: Classifies inputs into `VALID`, `ROBUSTNESS_PROBE`, or `CONSTRAINT_VALIDITY_UNKNOWN`.
+7. `synthesize_edge_cases`: Executes combined boundary analysis and edge-case candidate generation.
+8. `retrieve_knowledge_context`: Searches domain knowledge for algorithmic patterns and invariants via RAG.
 
-The backend is configured to listen on `127.0.0.1:8000`.
+---
 
-### 4.4 Test Intelligence — `core/test_intelligence/`
+## 6. Retrieval-Augmented Generation (RAG) Architecture
 
-The intelligence pipeline is responsible for interpreting problem constraints and proposing additional inputs.
+The RAG subsystem (`core/rag/`) bridges the gap between problem constraints and domain-specific edge-case patterns (e.g., binary search invariants, cycle detection traps, tree skewness).
 
-Logical responsibilities include:
-- Constraint parsing and parameter association.
-- Cross-parameter relationship representation.
-- Coverage-gap identification.
-- Candidate input synthesis.
-- Candidate validity classification.
-- Candidate ranking and deduplication.
+```mermaid
+flowchart LR
+    subgraph Ingestion [Document Ingestion Pipeline]
+        Doc[Markdown / Domain Knowledge Document] --> Processor[core/rag/processing/DocumentProcessor]
+        Processor -->|Sentence-Boundary Splitting| Chunks[Overlapping Chunks: 500 chars / 100 overlap]
+        Chunks --> SHA[SHA-256 Content Fingerprint]
+        SHA --> EmbedGen[Embedding Provider: 1536-dim Unit Vectors]
+        EmbedGen --> PGStore[(PostgreSQL 16: knowledge_documents & knowledge_chunks)]
+    end
 
-### 4.5 Static Code Hygiene
+    subgraph Retrieval [Runtime Similarity Retrieval Pipeline]
+        Query[Agent Tool Query: 'binary search boundary'] --> QEmbed[Generate Normalized Query Vector]
+        QEmbed --> SQLFilter{SQL WHERE: Tenant Scope & Embedding != NULL}
+        SQLFilter --> CosineOrder[SQL ORDER BY: embedding <=> query_vec ASC]
+        CosineOrder --> LimitTopK[SQL LIMIT: Top-K & Distance <= Threshold]
+        LimitTopK --> ScoredChunks[Ranked RetrievedChunk Objects]
+        ScoredChunks --> Provenance[Audit Provenance attached to Report]
+    end
+```
 
-Static code hygiene is presented separately from test-input intelligence. It provides static inspection information and must not be represented as a solution-correctness score.
+### 6.1 Database-Side Vector Retrieval
+- **pgvector Integration**: Uses the PostgreSQL `vector` extension (`Vector(1536)`).
+- **Native Cosine Operator (`<=>`)**: Orders rows directly in SQL by cosine distance ($1 - \text{sim}$), returning closest chunks first.
+- **HNSW Indexing**: Accelerated by a hierarchical navigable small-world index (`USING hnsw (embedding vector_cosine_ops)`).
+- **Tenant Isolation Precedence**: Tenant isolation filters (`is_global IS true OR user_id = :user_id`) reside in the SQL `WHERE` clause and are evaluated **before** `ORDER BY` and `LIMIT`, preventing cross-tenant leakage.
 
-### 4.6 Database & Persistence Architecture — PostgreSQL 16 & JSONB Document Store
+---
 
-EdgeMind implements a unified PostgreSQL 16 persistence architecture combining relational tables and native JSONB document storage:
-- **Relational Entities (`core/database/models/`)**: Manages structured accounts (`users`), tenant scopes (`projects`), catalog items (`problems`), and execution sessions (`analysis_sessions`).
-- **JSONB Document Store (`analysis_reports`)**: Stores full test intelligence reports, synthesized edge-case candidates, coverage gaps, parsed constraints, and code metrics within native PostgreSQL `JSONB` columns (`report_data`), accelerated via a PostgreSQL GIN index (`USING gin (report_data jsonb_path_ops)`).
-- **Alembic Database Migrations (`migrations/versions/`)**: Sequential, reversible schema migrations (001 initial tables, 002 auth/multi-tenancy, 003 storage status, 004 PostgreSQL JSONB report store).
-- **Graceful Portability**: Employs SQLAlchemy 2.0 async engine with SQLite fallback (`aiosqlite` with SQLite JSON and PRAGMA foreign keys) for fast, zero-dependency local unit testing.
+## 7. Persistence Architecture: Relational, JSONB & pgvector
 
-### 4.7 Authentication, Authorization & Multi-Tenancy
+```mermaid
+erDiagram
+    users ||--o{ projects : "owns"
+    users ||--o{ analysis_sessions : "executes"
+    users ||--o{ analysis_reports : "owns"
+    users ||--o{ knowledge_documents : "authors"
+    users ||--o{ knowledge_chunks : "owns"
 
-- **Password Security**: Uses Argon2id password hashing via `pwdlib`.
-- **Stateless Tokens**: RFC 7519 compliant JSON Web Tokens (HMAC-SHA256) with short-lived access tokens (~15m) and cryptographically tracked refresh token rotation (~7d) with automatic reuse detection and family revocation.
-- **Role-Based Access Control (RBAC)**: Supports `user` and `admin` roles.
-- **Tenant Isolation**: Analysis sessions, projects, and report documents are strictly scoped to the owning user. Non-admin cross-tenant accesses return HTTP 404 to prevent resource enumeration.
-- **Anonymous Extension Compatibility**: Supports unauthenticated Chrome extension analysis runs with null `user_id`, ensuring developer usability is never blocked.
+    projects ||--o{ analysis_sessions : "contains"
+    projects ||--o{ analysis_reports : "contains"
+    projects ||--o{ knowledge_documents : "scopes"
 
-## 5. Analysis Modes
+    problems ||--o{ analysis_sessions : "analyzed_in"
+    problems ||--o{ analysis_reports : "associated_with"
 
-### Baseline-Driven Intelligence
+    analysis_sessions ||--|| analysis_reports : "persists (1:1)"
+    knowledge_documents ||--|{ knowledge_chunks : "cascades (1:N)"
 
-When public examples are available:
-1. Extract the available examples.
-2. Parse supported constraints.
-3. Compare the baseline examples with relevant coverage dimensions.
-4. Identify gaps.
-5. Generate and rank additional candidates.
+    users {
+        uuid id PK
+        string email UK
+        string password_hash
+        string role
+        boolean is_active
+        datetime created_at
+    }
 
-### Context-Based Intelligence
+    analysis_sessions {
+        uuid id PK
+        uuid user_id FK
+        uuid project_id FK
+        string analysis_mode
+        string analysis_status
+        string report_storage_status
+        integer gaps_detected
+        integer candidates_generated
+        float duration_ms
+        datetime created_at
+    }
 
-When public examples are unavailable or insufficient:
-1. Use detected problem context and supported constraints.
-2. Identify candidate coverage dimensions.
-3. Generate inputs only where enough context exists.
-4. Preserve unresolved constraints and uncertainty.
-5. Avoid claiming that the generated inputs are guaranteed valid when the system cannot establish that.
+    analysis_reports {
+        uuid id PK
+        uuid analysis_session_id FK,UK
+        uuid user_id FK
+        uuid project_id FK
+        jsonb report_data "GIN Indexed"
+        string schema_version
+        datetime created_at
+    }
 
-## 6. High-Level Data Flow
+    knowledge_documents {
+        uuid id PK
+        string title
+        string source_uri
+        string content_hash "SHA-256 Indexed"
+        jsonb doc_metadata
+        uuid user_id FK
+        boolean is_global
+        datetime created_at
+    }
 
-1. The user opens a supported problem page.
-2. The extension collects problem metadata, examples, constraints, and language context available from the page.
-3. The user requests analysis.
-4. The extension sends the analysis request to the local API.
-5. The backend normalizes and interprets the supplied context.
-6. The intelligence pipeline identifies gaps and synthesizes candidates.
-7. The backend returns structured analysis data.
-8. The extension renders the results and exposes full candidate input where requested.
+    knowledge_chunks {
+        uuid id PK
+        uuid document_id FK
+        integer chunk_index
+        text content
+        string content_hash "SHA-256 Indexed"
+        vector_1536 embedding "HNSW Indexed"
+        jsonb chunk_metadata
+        uuid user_id FK
+        boolean is_global
+        datetime created_at
+    }
+```
 
-## 7. Deployment View
+---
 
-- **Browser:** Google Chrome with the unpacked Manifest V3 extension.
-- **Extension source:** `extension/edgemind/`.
-- **Backend:** Local Python/FastAPI process (`core/api.py`).
-- **Database:** Local or containerized PostgreSQL 16 (`docker-compose.yml`) with in-memory SQLite (`aiosqlite`) fallback for isolated test execution.
-- **API address:** `http://127.0.0.1:8000`.
-- **Windows integration:** PowerShell lifecycle scripts and the configured Native Messaging host under `scripts/`.
-- **Repository:** https://github.com/whiskerwolf/EdgeMind
+## 8. LLM Evaluation Framework
 
-The original `extension/chrome/` directory is retained separately for legacy compatibility and is not the active EdgeMind extension directory.
+Located in `evaluation/`, the evaluation framework provides offline, quantitative benchmarks:
+- **Datasets (`evaluation/datasets/`)**: 20 comprehensive algorithmic problems spanning binary search, two-pointer arrays, dynamic programming, trees, and graphs.
+- **Metric Suite (`evaluation/metrics/`)**:
+  - `ConstraintAccuracyMetric`: Precision and recall of extracted inequality bounds.
+  - `ToolSelectionMetric`: Precision, recall, and F1-score of agent tool dispatch.
+  - `EdgeCaseCoverageMetric`: Recall of critical boundary conditions identified against ground-truth sets.
+  - `ResponseValidityMetric`: Verification that responses strictly conform to Pydantic schemas with unverified output disclaimers.
+- **Runner (`evaluation/runner.py`)**: Executes deterministic CI runs using `MockAgentProvider` or optional live evaluations against external LLMs, persisting timestamped JSON evaluation reports.
 
-## 8. Security and Safety Design
+---
 
-- The API listens on loopback (`127.0.0.1`) rather than all network interfaces.
-- Chrome Native Messaging registration is scoped to the configured extension origin.
-- The native host is used for a narrow local startup/health-check purpose.
-- User-submitted code is inspected statically; it is never executed.
-- Synthesized candidate inputs are never executed.
-- Generated candidates carry unverified expected-output status (`expected_output = None`, `is_expected_output_verified = False`).
-- User passwords are protected using Argon2id cryptographic hashing; tokens are validated via HMAC-SHA256 with single-use refresh token rotation.
-- Multi-tenant data isolation: all projects, sessions, and report documents require authorization and return HTTP 404 for unauthorized tenant lookups.
-- Privacy & data sanitization: raw user source code, passwords, JWTs, and authentication secrets are strictly scrubbed prior to report document persistence.
-- `VALID` means that supported constraints are satisfied; it does not mean that a solution has been tested or proven correct.
+## 9. Deployment View: Local Infrastructure vs. Cloud
 
-## 9. Reliability and Failure Handling
+### 9.1 Local Development & Evaluation (Current Implementation)
+- **FastAPI Service**: Runs locally as an asynchronous Python process (`http://127.0.0.1:8000`).
+- **Database Engine**: Containerized PostgreSQL 16 with `pgvector` managed via [docker-compose.yml](file:///c:/Users/DELL/Projects/EdgeMind/docker-compose.yml):
+  - **Pinned Image**: `pgvector/pgvector:0.8.7-pg16` (Debian Bookworm base).
+  - **Volume Isolation**: Dedicated volume `postgres_pgvector_data` isolates the Debian cluster from legacy `postgres_data` (Alpine) to avoid glibc/musl collation mismatches.
+- **CI & Portable Testing**: When Docker is offline, the persistence layer utilizes an in-memory SQLite engine (`aiosqlite` with SQLite JSON), executing all unit tests and SQL compilation verifications without dependencies.
 
-- The extension displays connection state rather than assuming the backend is available.
-- The health endpoint is used to establish actual backend availability.
-- The native host should avoid starting duplicate backend processes.
-- Startup failures should return a useful error and write diagnostics to logs.
-- Large candidate inputs are summarized in the popup to keep the interface usable.
+### 9.2 Cloud Deployment (Planned Future Scope — Not Implemented)
+- Distributed container orchestration (Kubernetes / AWS ECS).
+- Cloud-managed PostgreSQL (AWS RDS / GCP Cloud SQL with pgvector).
+- Distributed cache layers (Redis cluster).
+- External API Gateway with edge TLS termination and public rate limiting.
+- *Status Note*: Cloud deployment is planned for future releases; all current functionality is implemented and verified for local workstation deployment.
 
-## 10. Key Architectural Constraints
+---
 
-1. Do not introduce runtime execution of user code or candidates.
-2. Do not expose the backend publicly.
-3. Keep the extension UI separate from backend intelligence.
-4. Do not report unparsed semantic constraints as fully parsed.
-5. Do not report generated expected outputs as verified.
+## 10. Security & Safety Boundaries
+
+1. **Loopback Binding**: The backend binds exclusively to `127.0.0.1`, rejecting inbound traffic from external networks.
+2. **Zero Runtime Execution**: User code is analyzed exclusively using Python's `ast` module and static regex parsers; runtime execution is impossible.
+3. **Prompt Injection Defense**: All retrieved RAG chunks are enclosed in `<retrieved_context>` tags with explicit system instructions prohibiting retrieved text from overriding core system rules.
+4. **Input Size Limits**: User source code is capped at 64 KiB; RAG queries are capped at 2,000 characters; RAG chunk storage is capped at 4,000 characters.
+5. **Credential & Secret Scrubbing**: All API keys, database connection strings, JWT secrets, and bearer tokens are redacted from logs and persisted reports via `Settings.sanitize_error`.
+6. **Password Security**: Passwords are hashed with Argon2id; JWT access tokens expire in ~15 minutes; refresh tokens rotate on every use with automatic token family revocation upon reuse detection.
