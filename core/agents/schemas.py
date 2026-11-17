@@ -19,6 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class AgentStatus(str, Enum):
     """Execution status for the multi-step agent session."""
     SUCCESS = "SUCCESS"
+    STATIC_ONLY = "STATIC_ONLY"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
     PARTIAL = "PARTIAL"
     MAX_ITERATIONS_REACHED = "MAX_ITERATIONS_REACHED"
     CANCELLED = "CANCELLED"
@@ -94,7 +97,10 @@ class AgentStepResult(BaseModel):
     thought: Optional[str] = None
     tool_calls: List[ToolCall] = Field(default_factory=list)
     content: Optional[str] = None
-    finish_reason: str = Field(default="stop", description="'tool_calls', 'stop', 'length', or 'error'")
+    finish_reason: str = Field(default="stop", description="'tool_calls', 'stop', 'length', 'unavailable', or 'error'")
+    error: Optional[str] = None
+    error_type: Optional[str] = None
+    status_code: Optional[int] = None
 
 
 class AgentState(BaseModel):
@@ -276,6 +282,10 @@ class AgentAnalyzeRequest(BaseModel):
         default=None,
         description="Target reasoning model identifier",
     )
+    mode: Optional[str] = Field(
+        default="agent",
+        description="Analysis execution mode: 'agent' (AI multi-step agent) or 'static_only' (deterministic static analysis)",
+    )
     static_only: bool = Field(
         default=True,
         description="Safety invariant: static analysis only with zero code execution",
@@ -313,6 +323,14 @@ class AgentAnalyzeResponse(BaseModel):
         description="Chronological log of all tool executions and outcomes",
     )
     final_summary: str = Field(..., description="Agent's synthesized final reasoning and summary")
+    execution_mode: str = Field(
+        default="AI_AGENT",
+        description="Execution mode: AI_AGENT, STATIC_ONLY, or DEGRADED_STATIC",
+    )
+    ai_reasoning_performed: bool = Field(
+        default=False,
+        description="Whether actual AI LLM reasoning was performed during this session",
+    )
     test_intelligence: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Synthesized test intelligence findings and ranked edge-case candidates",

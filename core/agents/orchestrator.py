@@ -135,8 +135,23 @@ class AgentOrchestrator:
             status=AgentStatus.SUCCESS,
         )
 
+        ai_reasoning_performed = False
+        execution_mode = "AI_AGENT"
+        warnings: List[str] = [
+            "Zero user code was executed at runtime.",
+            "Generated candidates are labeled GENERATED_TEST with expected_output=None.",
+        ]
+
+        # Check for explicit deterministic static-only mode
+        is_static_only_mode = getattr(request, "mode", None) == "static_only"
+        if is_static_only_mode:
+            state.status = AgentStatus.STATIC_ONLY
+            state.final_summary = "Deterministic static analysis completed with zero AI reasoning."
+            execution_mode = "STATIC_ONLY"
+            ai_reasoning_performed = False
+
         # Multi-Step Reasoning Loop
-        while state.iteration < state.max_iterations:
+        while not is_static_only_mode and state.iteration < state.max_iterations:
             # Check cancellation token
             if cancellation_token and cancellation_token.is_set():
                 state.status = AgentStatus.CANCELLED
@@ -165,14 +180,45 @@ class AgentOrchestrator:
                 )
             except Exception as exc:
                 logger.error(f"Provider chat_completion failed: {exc}")
-                state.status = AgentStatus.FAILED
+                state.status = AgentStatus.PROVIDER_ERROR
                 state.final_summary = f"Reasoning provider failed: {exc}"
+                execution_mode = "DEGRADED_STATIC"
+                ai_reasoning_performed = False
+                warnings.append(f"AI provider failed: {exc}. Useful static metrics were preserved.")
+                break
+
+            # Handle Provider Unavailable (No API Key Configured)
+            if step_result.finish_reason == "unavailable":
+                state.status = AgentStatus.PROVIDER_UNAVAILABLE
+                state.final_summary = (
+                    step_result.content
+                    or "AI reasoning provider is not configured. AI reasoning was not performed."
+                )
+                execution_mode = "DEGRADED_STATIC"
+                ai_reasoning_performed = False
+                warnings.append("AI reasoning provider is not configured. AI reasoning was not performed.")
+                break
+
+            # Handle Provider Error (401, 429, 500, network error, timeout, malformed)
+            if step_result.finish_reason == "error":
+                state.status = AgentStatus.PROVIDER_ERROR
+                state.final_summary = (
+                    step_result.content
+                    or f"AI reasoning halted due to provider error: {step_result.error or 'Unknown error'}."
+                )
+                execution_mode = "DEGRADED_STATIC"
+                ai_reasoning_performed = False
+                warnings.append(
+                    f"AI reasoning halted due to provider error ({step_result.error_type or 'error'}): "
+                    f"{step_result.error or 'Unknown error'}. Useful static code metrics were preserved."
+                )
                 break
 
             state.iteration += 1
 
             # Case A: Provider requests one or more tool calls
             if step_result.tool_calls:
+                ai_reasoning_performed = True
                 # Append assistant message with requested tool calls
                 asst_msg = AgentMessage(
                     role="assistant",
@@ -291,6 +337,8 @@ class AgentOrchestrator:
             else:
                 state.final_summary = step_result.content or "Agent completed reasoning without additional notes."
                 state.status = AgentStatus.SUCCESS
+                ai_reasoning_performed = True
+                execution_mode = "AI_AGENT"
                 break
 
         # Check if iteration limit was reached without final answer
@@ -304,16 +352,41 @@ class AgentOrchestrator:
         # Baseline static analysis fallback if not already executed
         static_analysis = state.accumulated_context.get("structure")
         if not static_analysis:
-            code_report = analyze_code(
-                request.code,
-                filename=request.filename or "solution.py",
-                static_only=True,
-            )
-            static_analysis = {
-                "static_metrics": code_report.get("metrics", {}),
-                "findings_count": len(code_report.get("results", [])),
-                "code_report": code_report,
-            }
+            try:
+                from core.service import analyze_edgemind
+
+                edge_report = analyze_edgemind(
+                    code=request.code,
+                    problem_context=request.problem_context,
+                    test_cases=request.test_cases,
+                    filename=request.filename or "solution.py",
+                    max_candidates=request.max_candidates or 10,
+                    static_only=True,
+                )
+                code_report = edge_report.get("code_analysis", {})
+                ti_data = edge_report.get("test_intelligence", {})
+                static_analysis = {
+                    "static_metrics": code_report.get("metrics", {}),
+                    "findings_count": len(code_report.get("results", [])),
+                    "code_report": code_report,
+                }
+                if ti_data and not state.accumulated_context.get("candidates"):
+                    state.accumulated_context["candidates"] = ti_data.get("generated_candidates", [])
+                    state.accumulated_context["ranked_candidates"] = ti_data.get("ranked_candidates", [])
+                    state.accumulated_context["gaps"] = ti_data.get("coverage_gaps", [])
+                    state.accumulated_context["ranking_summary"] = ti_data.get("ranking_summary", {})
+            except Exception as exc:
+                logger.debug(f"Deterministic static fallback notice: {exc}")
+                code_report = analyze_code(
+                    request.code,
+                    filename=request.filename or "solution.py",
+                    static_only=True,
+                )
+                static_analysis = {
+                    "static_metrics": code_report.get("metrics", {}),
+                    "findings_count": len(code_report.get("results", [])),
+                    "code_report": code_report,
+                }
 
         # Assemble test intelligence section
         candidates = (
@@ -351,7 +424,7 @@ class AgentOrchestrator:
                     id=session_id,
                     user_id=current_user.id,
                     project_id=request.project_id,
-                    analysis_mode="AGENTIC",
+                    analysis_mode="AGENTIC" if execution_mode == "AI_AGENT" else "STATIC",
                     language="python",
                     analysis_status=state.status.value,
                     gaps_detected=len(gaps),
@@ -408,14 +481,13 @@ class AgentOrchestrator:
             iterations=state.iteration,
             tool_executions=state.tool_executions,
             final_summary=state.final_summary,
+            execution_mode=execution_mode,
+            ai_reasoning_performed=ai_reasoning_performed,
             test_intelligence=test_intelligence,
             code_analysis=static_analysis,
             total_duration_ms=round(total_duration_ms, 2),
             persisted_report_id=persisted_report_id,
-            warnings=[
-                "Zero user code was executed at runtime.",
-                "Generated candidates are labeled GENERATED_TEST with expected_output=None.",
-            ],
+            warnings=warnings,
             limitations=[
                 "Synthesized edge cases target domain boundaries, not confirmed runtime bugs.",
             ],

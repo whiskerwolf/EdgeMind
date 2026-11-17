@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import uuid
 
 from fastapi.testclient import TestClient
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +37,7 @@ from core.agents import (
     AgentOrchestrator,
     AgentStatus,
     AgentStepResult,
+    LiveAgentProvider,
     MockAgentProvider,
     ToolCall,
     ToolExecutionStatus,
@@ -587,7 +589,7 @@ os.system("echo HACKED")
 # =============================================================================
 
 def test_api_agent_analyze_endpoint_unauthenticated():
-    """Unauthenticated client can run agent analysis with static intelligence fallback."""
+    """Unauthenticated client runs agent endpoint without API key, receiving PROVIDER_UNAVAILABLE with static fallback."""
     with TestClient(app) as client:
         payload = {
             "code": "def isPalindrome(s: str) -> bool:\n    return s == s[::-1]",
@@ -598,9 +600,14 @@ def test_api_agent_analyze_endpoint_unauthenticated():
         response = client.post("/api/v1/agent/analyze", json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] in ("SUCCESS", "MAX_ITERATIONS_REACHED")
+        assert data["status"] == "PROVIDER_UNAVAILABLE"
+        assert data["execution_mode"] == "DEGRADED_STATIC"
+        assert data["ai_reasoning_performed"] is False
         assert data["product"] == "EdgeMind"
         assert "session_id" in data
+        assert "AI reasoning was not performed" in data["final_summary"]
+        assert data["code_analysis"] is not None
+        assert data["test_intelligence"] is not None
         assert data["persisted_report_id"] is None  # Unauthenticated -> not saved to user account
 
 
@@ -710,7 +717,9 @@ async def test_api_agent_analyze_authenticated_persistence(sqlite_test_engine):
         res = client.post("/api/v1/agent/analyze", json=payload, headers=headers)
         assert res.status_code == 200
         data = res.json()
-        assert data["status"] in ("SUCCESS", "MAX_ITERATIONS_REACHED")
+        assert data["status"] == "PROVIDER_UNAVAILABLE"
+        assert data["execution_mode"] == "DEGRADED_STATIC"
+        assert data["ai_reasoning_performed"] is False
         persisted_id = data.get("persisted_report_id")
         assert persisted_id is not None
 
@@ -723,3 +732,371 @@ async def test_api_agent_analyze_authenticated_persistence(sqlite_test_engine):
             assert report["analysis_session_id"] == data["session_id"]
             assert report["project_id"] == str(project_id)
             assert report["user_id"] == str(user_id)
+
+
+def test_api_agent_analyze_static_only_mode():
+    """Client can explicitly request mode='static_only' for deterministic completion."""
+    with TestClient(app) as client:
+        payload = {
+            "code": "def solve(nums): return sum(nums)",
+            "mode": "static_only",
+        }
+        res = client.post("/api/v1/agent/analyze", json=payload)
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "STATIC_ONLY"
+        assert data["execution_mode"] == "STATIC_ONLY"
+        assert data["ai_reasoning_performed"] is False
+        assert "Deterministic static analysis" in data["final_summary"]
+        assert data["code_analysis"] is not None
+
+
+# =============================================================================
+# LiveAgentProvider & Error Handling Tests (Mock HTTP Transport)
+# =============================================================================
+
+@pytest.mark.anyio
+async def test_live_provider_missing_api_key():
+    """When API key is missing, provider returns unavailable finish_reason without pretending to call tools."""
+    provider = LiveAgentProvider(api_key=None)
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "unavailable"
+    assert step.error_type == "provider_unavailable"
+    assert len(step.tool_calls) == 0
+    assert "AI provider API key is not configured" in (step.error or "")
+
+    # Run in orchestrator
+    orchestrator = AgentOrchestrator(provider=provider)
+    req = AgentAnalyzeRequest(code="def f(x):\n    return x * 2")
+    res = await orchestrator.run(req)
+
+    assert res.status == AgentStatus.PROVIDER_UNAVAILABLE.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert res.ai_reasoning_performed is False
+    assert len(res.tool_executions) == 0
+    assert "AI reasoning was not performed" in res.final_summary
+    assert res.code_analysis is not None
+
+
+@pytest.mark.anyio
+async def test_live_provider_invalid_api_key_401():
+    """HTTP 401 returns authentication_error and marks orchestrator status PROVIDER_ERROR."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "Invalid API key provided."}})
+
+    transport = httpx.MockTransport(handler)
+    provider = LiveAgentProvider(api_key="sk-invalid-key", transport=transport)
+
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "error"
+    assert step.error_type == "authentication_error"
+    assert step.status_code == 401
+
+    orchestrator = AgentOrchestrator(provider=provider)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert res.ai_reasoning_performed is False
+    assert "authentication failed" in res.final_summary.lower()
+    assert res.code_analysis is not None
+
+
+@pytest.mark.anyio
+async def test_live_provider_rate_limit_429():
+    """HTTP 429 returns rate_limit error and marks orchestrator status PROVIDER_ERROR."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": {"message": "Rate limit reached for requests."}})
+
+    transport = httpx.MockTransport(handler)
+    provider = LiveAgentProvider(api_key="sk-test-key", transport=transport)
+
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "error"
+    assert step.error_type == "rate_limit"
+    assert step.status_code == 429
+
+    orchestrator = AgentOrchestrator(provider=provider)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert "rate limit" in res.final_summary.lower()
+
+
+@pytest.mark.anyio
+async def test_live_provider_server_error_500():
+    """HTTP 500 returns server_error and marks orchestrator status PROVIDER_ERROR."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": {"message": "Internal AI server error."}})
+
+    transport = httpx.MockTransport(handler)
+    provider = LiveAgentProvider(api_key="sk-test-key", transport=transport)
+
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "error"
+    assert step.error_type == "server_error"
+    assert step.status_code == 500
+
+    orchestrator = AgentOrchestrator(provider=provider)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert "server error" in res.final_summary.lower()
+
+
+@pytest.mark.anyio
+async def test_live_provider_timeout():
+    """ReadTimeout returns timeout error and marks orchestrator status PROVIDER_ERROR."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("Request connection timed out while waiting for response.")
+
+    transport = httpx.MockTransport(handler)
+    provider = LiveAgentProvider(api_key="sk-test-key", timeout=0.1, transport=transport)
+
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "error"
+    assert step.error_type == "timeout"
+
+    orchestrator = AgentOrchestrator(provider=provider)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert "timed out" in res.final_summary.lower()
+
+
+@pytest.mark.anyio
+async def test_live_provider_network_connection_failure():
+    """ConnectError returns connection_error and marks orchestrator status PROVIDER_ERROR."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Network is unreachable or DNS lookup failed.")
+
+    transport = httpx.MockTransport(handler)
+    provider = LiveAgentProvider(api_key="sk-test-key", transport=transport)
+
+    step = await provider.chat_completion(
+        messages=[{"role": "user", "content": "analyze"}],
+        tools=[],
+    )
+
+    assert step.finish_reason == "error"
+    assert step.error_type == "connection_error"
+
+    orchestrator = AgentOrchestrator(provider=provider)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert "could not connect" in res.final_summary.lower()
+
+
+@pytest.mark.anyio
+async def test_live_provider_malformed_response():
+    """Non-JSON or invalid payload structures are trapped and reported as malformed_response."""
+    # Subcase A: Invalid JSON string
+    def invalid_json_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html><body>Gateway Error</body></html>")
+
+    provider_a = LiveAgentProvider(api_key="sk-test-key", transport=httpx.MockTransport(invalid_json_handler))
+    step_a = await provider_a.chat_completion(messages=[{"role": "user", "content": "test"}], tools=[])
+    assert step_a.finish_reason == "error"
+    assert step_a.error_type == "malformed_response"
+
+    # Subcase B: Empty choices array
+    def empty_choices_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    provider_b = LiveAgentProvider(api_key="sk-test-key", transport=httpx.MockTransport(empty_choices_handler))
+    step_b = await provider_b.chat_completion(messages=[{"role": "user", "content": "test"}], tools=[])
+    assert step_b.finish_reason == "error"
+    assert step_b.error_type == "malformed_response"
+
+    orchestrator = AgentOrchestrator(provider=provider_b)
+    res = await orchestrator.run(AgentAnalyzeRequest(code="def f(x):\n    return x"))
+
+    assert res.status == AgentStatus.PROVIDER_ERROR.value
+    assert res.execution_mode == "DEGRADED_STATIC"
+    assert "malformed" in res.final_summary.lower()
+
+
+@pytest.mark.anyio
+async def test_live_provider_successful_response_parsing_mock_transport():
+    """Verify parsing of valid OpenAI function/tool calling JSON response."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_mock_123",
+                                "type": "function",
+                                "function": {
+                                    "name": "parse_problem_constraints",
+                                    "arguments": '{"raw_constraints": ["1 <= n <= 100"]}',
+                                },
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    provider = LiveAgentProvider(api_key="sk-test-key", transport=httpx.MockTransport(handler))
+    step = await provider.chat_completion(messages=[{"role": "user", "content": "test"}], tools=[])
+
+    assert step.finish_reason == "tool_calls"
+    assert len(step.tool_calls) == 1
+    assert step.tool_calls[0].name == "parse_problem_constraints"
+    assert step.tool_calls[0].get_arguments_dict() == {"raw_constraints": ["1 <= n <= 100"]}
+
+
+@pytest.mark.anyio
+async def test_live_provider_no_tool_call_response_handling():
+    """Verify single-turn direct text response with finish_reason='stop' sets SUCCESS."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Direct final answer: The algorithm is optimal O(N) linear time.",
+                        "tool_calls": [],
+                    },
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    provider = LiveAgentProvider(api_key="sk-test-key", transport=httpx.MockTransport(handler))
+    orchestrator = AgentOrchestrator(provider=provider)
+
+    req = AgentAnalyzeRequest(code="def f(nums):\n    return sum(nums)")
+    res = await orchestrator.run(req)
+
+    assert res.status == AgentStatus.SUCCESS.value
+    assert res.execution_mode == "AI_AGENT"
+    assert res.ai_reasoning_performed is True
+    assert res.iterations == 1
+    assert len(res.tool_executions) == 0
+    assert "Direct final answer" in res.final_summary
+
+
+@pytest.mark.anyio
+async def test_live_provider_multiple_tool_call_rounds():
+    """Verify multi-round tool-calling loop using stateful MockTransport."""
+    turn_counter = 0
+
+    def stateful_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal turn_counter
+        turn_counter += 1
+
+        if turn_counter == 1:
+            # Round 1: Model requests analyze_problem_structure
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_step1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "analyze_problem_structure",
+                                            "arguments": '{"code": "def f(n): return n"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            )
+        elif turn_counter == 2:
+            # Round 2: Model requests parse_problem_constraints
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_step2",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "parse_problem_constraints",
+                                            "arguments": '{"raw_constraints": ["1 <= n <= 10^3"]}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            )
+        else:
+            # Round 3: Final answer
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Multi-turn live reasoning complete: Structure analyzed and bounds extracted.",
+                                "tool_calls": [],
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            )
+
+    provider = LiveAgentProvider(api_key="sk-test-live", transport=httpx.MockTransport(stateful_handler))
+    orchestrator = AgentOrchestrator(provider=provider, max_iterations=5)
+
+    req = AgentAnalyzeRequest(code="def f(n):\n    return n")
+    res = await orchestrator.run(req)
+
+    assert res.status == AgentStatus.SUCCESS.value
+    assert res.execution_mode == "AI_AGENT"
+    assert res.ai_reasoning_performed is True
+    assert res.iterations == 3
+    assert len(res.tool_executions) == 2
+    assert res.tool_executions[0].tool_name == "analyze_problem_structure"
+    assert res.tool_executions[1].tool_name == "parse_problem_constraints"
+    assert "Multi-turn live reasoning complete" in res.final_summary

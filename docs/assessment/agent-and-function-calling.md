@@ -90,6 +90,19 @@ The agent does not blindly run every tool in a fixed sequence. The model inspect
 - **`agent_session_timeout`**: Default 60.0 seconds total wall-clock time.
 - **Cancellation Tokens**: Supports cooperative cancellation via `asyncio.Event`.
 
+### Provider Availability & Robust Failure Handling
+The system explicitly distinguishes between four operational execution states:
+
+| Status (`AgentStatus`) | Execution Mode | `ai_reasoning_performed` | Description |
+| :--- | :--- | :--- | :--- |
+| **`SUCCESS`** | `AI_AGENT` | `True` | Live AI reasoning succeeded, with or without tool calls. |
+| **`STATIC_ONLY`** | `STATIC_ONLY` | `False` | Explicit static-only mode; zero LLM calls attempted. |
+| **`PROVIDER_UNAVAILABLE`** | `DEGRADED_STATIC` | `False` | No API key configured; zero tools claimed; useful static metrics preserved. |
+| **`PROVIDER_ERROR`** | `DEGRADED_STATIC` | `False` | Provider HTTP error (401, 429, 500), timeout, network fail, or malformed JSON. |
+
+- **No Silent Mock Fallback**: When `LiveAgentProvider` lacks credentials or fails, it never silently substitutes `MockAgentProvider`.
+- **Degraded Static Preservation**: When external AI fails or is unconfigured, EdgeMind automatically executes its deterministic static AST analyzers and heuristic domain partition generators (`analyze_edgemind`) so the user still receives actionable code metrics and edge cases with full transparency.
+
 ---
 
 ## 5. REST API Integration (`POST /api/v1/agent/analyze`)
@@ -99,6 +112,7 @@ The agent does not blindly run every tool in a fixed sequence. The model inspect
 {
   "code": "def twoSum(nums, target):\n    lookup = {}\n    for i, x in enumerate(nums):\n        if target - x in lookup:\n            return [lookup[target - x], i]\n        lookup[x] = i\n    return []",
   "filename": "solution.py",
+  "mode": "agent",
   "problem_context": {
     "title": "Two Sum",
     "constraints": ["2 <= nums.length <= 10^4", "-10^9 <= nums[i] <= 10^9"]
@@ -120,6 +134,8 @@ The agent does not blindly run every tool in a fixed sequence. The model inspect
   "version": "1.0.0",
   "session_id": "9ce01af2-71fb-40ae-9326-0f7b52c7730d",
   "iterations": 5,
+  "execution_mode": "AI_AGENT",
+  "ai_reasoning_performed": true,
   "tool_executions": [
     {
       "tool_call_id": "call_1234abcd",
@@ -170,26 +186,37 @@ If `project_id` is passed, the endpoint queries `ProjectRepository`:
 
 ## 6. Test Evidence & Automated Verification
 
-The test suite in `tests/test_agent_orchestration.py` covers 16 comprehensive verification cases:
+The test suite in `tests/test_agent_orchestration.py` covers 27 comprehensive verification cases:
 
 | Test Case | Scenario Verified | Status |
 | :--- | :--- | :--- |
-| `test_tool_registry_registration_and_schemas` | Verifies dynamic registration and OpenAI/Gemini JSON Schema generation. | **PASSED** |
+| `test_tool_registry_registration_and_schemas` | Dynamic tool registration and OpenAI/Gemini JSON Schema generation. | **PASSED** |
 | `test_default_tool_registry_contains_7_analytical_tools` | Verifies all 7 analytical tools are registered by default. | **PASSED** |
-| `test_tool_execution_timeout_isolated` | Verifies registry aborts tools exceeding `timeout_seconds`. | **PASSED** |
-| `test_single_tool_call_execution` | Verifies single-turn tool invocation and observation handling. | **PASSED** |
-| `test_multistep_sequential_tool_calling` | Verifies real 4-tool sequence across 5 reasoning cycles. | **PASSED** |
-| `test_direct_final_answer_termination` | Verifies immediate final answer with zero tool calls exits in 1 iteration. | **PASSED** |
-| `test_invalid_tool_name_rejection_and_recovery` | Verifies unknown tool call returns error and agent self-corrects. | **PASSED** |
-| `test_invalid_tool_arguments_validation_and_recovery` | Verifies Pydantic argument validation error and agent recovery. | **PASSED** |
-| `test_tool_timeout_handling_in_orchestration` | Verifies slow tool is marked TIMEOUT without crashing the agent. | **PASSED** |
-| `test_maximum_iterations_bound` | Verifies infinite tool-calling loop terminates at `max_iterations`. | **PASSED** |
-| `test_request_cancellation` | Verifies cooperative cancellation token sets `CANCELLED`. | **PASSED** |
-| `test_zero_code_execution_security` | Submits destructive code (`open()`, `os.system()`); guarantees canary file is never created. | **PASSED** |
-| `test_api_agent_analyze_endpoint_unauthenticated` | Tests HTTP POST `/api/v1/agent/analyze` unauthenticated. | **PASSED** |
+| `test_tool_execution_timeout_isolated` | Registry aborts tools exceeding `timeout_seconds`. | **PASSED** |
+| `test_single_tool_call_execution` | Single-turn tool invocation and observation handling. | **PASSED** |
+| `test_multistep_sequential_tool_calling` | Real 4-tool sequence across 5 reasoning cycles. | **PASSED** |
+| `test_direct_final_answer_termination` | Immediate final answer with zero tool calls exits in 1 iteration. | **PASSED** |
+| `test_invalid_tool_name_rejection_and_recovery` | Unknown tool call returns error and agent self-corrects. | **PASSED** |
+| `test_invalid_tool_arguments_validation_and_recovery` | Pydantic argument validation error and agent recovery. | **PASSED** |
+| `test_tool_timeout_handling_in_orchestration` | Slow tool is marked TIMEOUT without crashing the agent. | **PASSED** |
+| `test_maximum_iterations_bound` | Infinite tool-calling loop terminates at `max_iterations`. | **PASSED** |
+| `test_request_cancellation` | Cooperative cancellation token sets `CANCELLED`. | **PASSED** |
+| `test_zero_code_execution_security` | Submits destructive code; guarantees canary file is never created. | **PASSED** |
+| `test_api_agent_analyze_endpoint_unauthenticated` | Unauthenticated access returns `PROVIDER_UNAVAILABLE` with static fallback. | **PASSED** |
 | `test_api_agent_analyze_input_validations` | Enforces 64 KiB source code limit and rejects empty/non-static code. | **PASSED** |
-| `test_api_agent_analyze_tenant_isolation` | Verifies cross-tenant project ID manipulation returns HTTP 404. | **PASSED** |
-| `test_api_agent_analyze_authenticated_persistence` | Verifies full report persistence in PostgreSQL JSONB store. | **PASSED** |
+| `test_api_agent_analyze_tenant_isolation` | Cross-tenant project ID manipulation returns HTTP 404. | **PASSED** |
+| `test_api_agent_analyze_authenticated_persistence` | Full report persistence in PostgreSQL JSONB store. | **PASSED** |
+| `test_api_agent_analyze_static_only_mode` | Explicit client request for `mode='static_only'` returns `STATIC_ONLY`. | **PASSED** |
+| `test_live_provider_missing_api_key` | Unset key returns `PROVIDER_UNAVAILABLE`, zero tools called, static preserved. | **PASSED** |
+| `test_live_provider_invalid_api_key_401` | HTTP 401 returns `PROVIDER_ERROR` and `authentication_error`. | **PASSED** |
+| `test_live_provider_rate_limit_429` | HTTP 429 returns `PROVIDER_ERROR` and `rate_limit`. | **PASSED** |
+| `test_live_provider_server_error_500` | HTTP 500 returns `PROVIDER_ERROR` and `server_error`. | **PASSED** |
+| `test_live_provider_timeout` | Read timeout returns `PROVIDER_ERROR` and `timeout`. | **PASSED** |
+| `test_live_provider_network_connection_failure` | Connect error returns `PROVIDER_ERROR` and `connection_error`. | **PASSED** |
+| `test_live_provider_malformed_response` | HTML or corrupt JSON returns `PROVIDER_ERROR` and `malformed_response`. | **PASSED** |
+| `test_live_provider_successful_response_parsing_mock_transport` | Valid OpenAI function calling JSON response parsed into typed ToolCalls. | **PASSED** |
+| `test_live_provider_no_tool_call_response_handling` | Direct text completion sets `SUCCESS` with `ai_reasoning_performed=True`. | **PASSED** |
+| `test_live_provider_multiple_tool_call_rounds` | Multi-turn tool calling sequence with stateful transport sets `SUCCESS`. | **PASSED** |
 
 ---
 
