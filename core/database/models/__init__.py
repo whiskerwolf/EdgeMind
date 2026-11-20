@@ -3,6 +3,7 @@ EdgeMind Database Models Package.
 """
 
 from core.database.base import Base
+from core.database.models.ai_token_usage import AiTokenUsage
 from core.database.models.analysis_report import AnalysisReport
 from core.database.models.analysis_session import AnalysisSession
 from core.database.models.knowledge_chunk import KnowledgeChunk
@@ -20,6 +21,7 @@ __all__ = [
     "Problem",
     "AnalysisSession",
     "AnalysisReport",
+    "AiTokenUsage",
     "KnowledgeDocument",
     "KnowledgeChunk",
 ]

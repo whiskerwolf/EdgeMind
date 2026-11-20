@@ -24,11 +24,67 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    # Official version-pinned Redis 7.2 patch release in supported LTS release family
+    image: ${REDIS_IMAGE:-redis:7.2.17-alpine3.21}
+    container_name: edgemind-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --rename-command RESTORE ""
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ${REDIS_VOLUME:-redis_data}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-rate-limit:
+    # Dedicated Redis instance for rate limiting to guarantee memory isolation
+    image: ${REDIS_IMAGE:-redis:7.2.17-alpine3.21}
+    container_name: edgemind-redis-rate-limit
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}}
+      --maxmemory 64mb
+      --maxmemory-policy noeviction
+      --rename-command RESTORE ""
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+    ports:
+      - "127.0.0.1:${REDIS_RATE_LIMIT_PORT:-6380}:6379"
+    volumes:
+      - ${REDIS_RATE_LIMIT_VOLUME:-redis_rate_limit_data}:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_RATE_LIMIT_PASSWORD:-$$REDIS_PASSWORD} --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   # Legacy Alpine volume preserved intact for rollback safety
   postgres_data:
     driver: local
   # Dedicated volume for PostgreSQL 16 + pgvector (Debian)
   postgres_pgvector_data:
+    driver: local
+  # Dedicated volume for Cache Redis persistence
+  redis_data:
+    driver: local
+  # Dedicated volume for Rate Limit Redis persistence
+  redis_rate_limit_data:
     driver: local
 

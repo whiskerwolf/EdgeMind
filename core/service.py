@@ -30,6 +30,9 @@ def validate_filename(filename: str) -> str:
     if not isinstance(filename, str):
         raise TypeError(f"Filename must be a string, got {type(filename).__name__}.")
 
+    if "\x00" in filename or "\0" in filename:
+        raise ValueError("Filename contains invalid null bytes.")
+
     cleaned = filename.strip()
     if not cleaned:
         raise ValueError("Filename must not be empty or whitespace-only.")
@@ -83,6 +86,9 @@ def analyze_code(
     # 2. Validate source code type and content
     if not isinstance(code, str):
         raise TypeError(f"Source code must be a string, got {type(code).__name__}.")
+
+    if "\x00" in code or "\0" in code:
+        raise ValueError("Source code contains invalid null bytes (\\x00).")
 
     if not code.strip():
         raise ValueError("Source code must not be empty or whitespace-only.")
@@ -261,6 +267,9 @@ def analyze_edgemind(
     # 2. Validate source code
     if not isinstance(code, str):
         raise TypeError(f"Source code must be a string, got {type(code).__name__}.")
+
+    if "\x00" in code or "\0" in code:
+        raise ValueError("Source code contains invalid null bytes (\\x00).")
 
     if not code.strip():
         raise ValueError("Source code must not be empty or whitespace-only.")

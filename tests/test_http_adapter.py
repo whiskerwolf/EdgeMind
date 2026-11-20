@@ -42,6 +42,12 @@ def test_missing_user_consent():
 def test_missing_api_key(monkeypatch):
     monkeypatch.delenv("CODEDOCTOR_AI_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("EDGEMIND_AI_KEY", raising=False)
+    from core.config import get_settings
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+    monkeypatch.setattr(get_settings(), "edgemind_ai_key", None)
+    monkeypatch.setattr(get_settings(), "gemini_api_key", None)
 
     adapter = HttpAdapter()
     request = AIRequest(

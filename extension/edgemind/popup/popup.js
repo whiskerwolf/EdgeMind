@@ -33,6 +33,8 @@
   const elSamplesList = document.getElementById("samples-list");
   let detectedSampleInputs = [];
   const elBtnAnalyze = document.getElementById("btn-analyze");
+  const elBtnCancelAnalysis = document.getElementById("btn-cancel-analysis");
+  let currentAnalysisController = null;
   const elLoadingState = document.getElementById("loading-state");
   const elLoadingMessage = document.getElementById("loading-message");
   const elErrorBanner = document.getElementById("error-banner");
@@ -53,6 +55,16 @@
   const elCandidatesSectionTitle = document.getElementById("candidates-section-title");
   const elStatGapsLabel = document.getElementById("stat-gaps-label");
   const elNoGapsText = document.getElementById("no-gaps-text");
+
+  // AI Usage & Cost Elements
+  const elUsageCard = document.getElementById("usage-card");
+  const elUsageSourceBadge = document.getElementById("usage-source-badge");
+  const elUsageModelValue = document.getElementById("usage-model-value");
+  const elUsagePromptTokens = document.getElementById("usage-prompt-tokens");
+  const elUsageCompletionTokens = document.getElementById("usage-completion-tokens");
+  const elUsageTotalTokens = document.getElementById("usage-total-tokens");
+  const elUsageCostValue = document.getElementById("usage-cost-value");
+  const elUsageRequestsCount = document.getElementById("usage-requests-count");
 
   // Tabs
   const elTabBtnIntel = document.getElementById("tab-btn-intel");
@@ -1498,6 +1510,92 @@
   }
 
   /**
+   * Render AI Token and Cost Monitoring Card.
+   */
+  function renderUsage(usage, model) {
+    if (!elUsageCard) return;
+
+    if (!usage || usage.usage_source === "UNAVAILABLE") {
+      elUsageCard.classList.remove("hidden");
+      if (elUsageSourceBadge) {
+        elUsageSourceBadge.textContent = "Unavailable";
+        elUsageSourceBadge.className = "badge badge-neutral";
+      }
+      if (elUsageModelValue) elUsageModelValue.textContent = model || "--";
+      if (elUsagePromptTokens) elUsagePromptTokens.textContent = "--";
+      if (elUsageCompletionTokens) elUsageCompletionTokens.textContent = "--";
+      if (elUsageTotalTokens) elUsageTotalTokens.textContent = "--";
+      if (elUsageCostValue) elUsageCostValue.textContent = "Unavailable";
+      if (elUsageRequestsCount) elUsageRequestsCount.textContent = "0";
+      return;
+    }
+
+    elUsageCard.classList.remove("hidden");
+
+    // Source badge
+    if (elUsageSourceBadge) {
+      if (usage.usage_source === "ACTUAL_PROVIDER") {
+        elUsageSourceBadge.textContent = "Actual Provider";
+        elUsageSourceBadge.className = "badge badge-pass";
+      } else if (usage.usage_source === "LOCAL_ESTIMATE") {
+        elUsageSourceBadge.textContent = "Estimated Locally";
+        elUsageSourceBadge.className = "badge badge-warn";
+      } else if (usage.usage_source === "LOCAL_INFERENCE") {
+        elUsageSourceBadge.textContent = "Local Inference";
+        elUsageSourceBadge.className = "badge badge-pass";
+      } else {
+        elUsageSourceBadge.textContent = usage.usage_source || "Recorded";
+        elUsageSourceBadge.className = "badge badge-neutral";
+      }
+    }
+
+    // Model name
+    let displayModel = model || "--";
+    if (usage.by_model && typeof usage.by_model === "object") {
+      const modelKeys = Object.keys(usage.by_model);
+      if (modelKeys.length > 0) {
+        displayModel = modelKeys.join(", ");
+      }
+    }
+    if (elUsageModelValue) elUsageModelValue.textContent = displayModel;
+
+    // Token counts
+    if (elUsagePromptTokens) {
+      elUsagePromptTokens.textContent = (usage.prompt_tokens != null)
+        ? Number(usage.prompt_tokens).toLocaleString()
+        : "--";
+    }
+    if (elUsageCompletionTokens) {
+      elUsageCompletionTokens.textContent = (usage.completion_tokens != null)
+        ? Number(usage.completion_tokens).toLocaleString()
+        : "--";
+    }
+    if (elUsageTotalTokens) {
+      elUsageTotalTokens.textContent = (usage.total_tokens != null)
+        ? Number(usage.total_tokens).toLocaleString()
+        : "--";
+    }
+
+    // Estimated cost
+    if (elUsageCostValue) {
+      if (usage.usage_source === "LOCAL_INFERENCE") {
+        elUsageCostValue.textContent = "$0.00 (Local / Free)";
+      } else if (usage.is_estimated_cost_known && usage.estimated_cost_usd != null) {
+        elUsageCostValue.textContent = `$${Number(usage.estimated_cost_usd).toFixed(6)}`;
+      } else {
+        elUsageCostValue.textContent = "Unknown (pricing unavailable)";
+      }
+    }
+
+    // Requests count
+    if (elUsageRequestsCount) {
+      elUsageRequestsCount.textContent = (usage.requests_count != null)
+        ? String(usage.requests_count)
+        : "1";
+    }
+  }
+
+  /**
    * Render complete EdgeMind report.
    */
   function renderReport(report) {
@@ -1644,8 +1742,120 @@
       warnings.forEach(w => elFindingsList.appendChild(renderFindingCard(w, false)));
     }
 
+    // Render AI Usage & Cost Monitoring
+    renderUsage(report.usage, report.model);
+
     // Default to Test Intelligence tab
     switchTab("intel");
+  }
+
+  /**
+   * Consume Server-Sent Events (SSE) stream via fetch and ReadableStream.
+   * Robustly handles arbitrary network chunk boundaries, UTF-8 split bytes,
+   * LF (\n\n) and CRLF (\r\n\r\n) event delimiters, multi-line data fields,
+   * incomplete final events, and clean cancellation via AbortSignal.
+   */
+  async function consumeSseStream(response, onEvent, signal) {
+    if (!response || !response.body) {
+      return;
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    function parseEventBlock(rawEvent) {
+      if (!rawEvent || !rawEvent.trim()) return;
+      const lines = rawEvent.split(/\r?\n/);
+      let eventType = "message";
+      let eventId = null;
+      let dataLines = [];
+
+      for (const line of lines) {
+        if (!line || line.startsWith(":")) {
+          // Heartbeat or comment line, ignore
+          continue;
+        }
+        if (line.startsWith("id:")) {
+          eventId = line.slice(3).trim();
+        } else if (line.startsWith("event:")) {
+          eventType = line.slice(6).trim();
+        } else if (line.startsWith("data:")) {
+          const dataVal = line.startsWith("data: ") ? line.slice(6) : line.slice(5);
+          dataLines.push(dataVal);
+        }
+      }
+
+      if (dataLines.length > 0) {
+        const dataStr = dataLines.join("\n");
+        let parsedData;
+        try {
+          parsedData = JSON.parse(dataStr);
+        } catch {
+          parsedData = { message: dataStr };
+        }
+        onEvent(eventType, parsedData, eventId);
+      }
+    }
+
+    try {
+      while (true) {
+        if (signal && signal.aborted) {
+          try { await reader.cancel(); } catch {}
+          break;
+        }
+
+        let readResult;
+        try {
+          readResult = await reader.read();
+        } catch (readErr) {
+          if (signal && signal.aborted) {
+            break;
+          }
+          throw readErr;
+        }
+
+        const { done, value } = readResult;
+        if (done) {
+          buffer += decoder.decode();
+          if (buffer.trim()) {
+            parseEventBlock(buffer);
+          }
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const crlfIdx = buffer.indexOf("\r\n\r\n");
+          const lfIdx = buffer.indexOf("\n\n");
+
+          let boundaryIndex = -1;
+          let delimiterLen = 0;
+
+          if (crlfIdx !== -1 && (lfIdx === -1 || crlfIdx < lfIdx)) {
+            boundaryIndex = crlfIdx;
+            delimiterLen = 4;
+          } else if (lfIdx !== -1) {
+            boundaryIndex = lfIdx;
+            delimiterLen = 2;
+          }
+
+          if (boundaryIndex === -1) {
+            break;
+          }
+
+          const rawEvent = buffer.slice(0, boundaryIndex);
+          buffer = buffer.slice(boundaryIndex + delimiterLen);
+          parseEventBlock(rawEvent);
+        }
+      }
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {
+        // Ignored
+      }
+    }
   }
 
   /**
@@ -1653,6 +1863,7 @@
    */
   async function handleAnalyze() {
     hideError();
+    if (elUsageCard) elUsageCard.classList.add("hidden");
 
     // 1. Validate active tab
     if (!currentTab || !currentTab.url || !currentTab.url.includes("leetcode.com")) {
@@ -1782,18 +1993,25 @@
         parameters: Array.from(paramSet)
       };
 
-      setLoading(true, "Evaluating domain partitions & generating edge-case candidates...");
+      setLoading(true, "Connecting to EdgeMind agent stream...");
 
-      // 8. Dispatch analysis request to EdgeMind API
+      // 7. Dispatch analysis request to EdgeMind API (Streaming with Fallback)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      currentAnalysisController = controller;
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
+
+      const STREAM_ENDPOINT = `${API_BASE_URL}/api/v1/agent/analyze/stream`;
+      const FALLBACK_ENDPOINT = `${API_BASE_URL}/api/v1/edgemind/analyze`;
 
       let response;
+      let isStreaming = true;
+
       try {
-        response = await fetch(`${API_BASE_URL}/api/v1/edgemind/analyze`, {
+        response = await fetch(STREAM_ENDPOINT, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream"
           },
           body: JSON.stringify({
             code: code,
@@ -1804,12 +2022,30 @@
           }),
           signal: controller.signal
         });
+
+        if (!response.ok && (response.status === 404 || response.status === 405)) {
+          isStreaming = false;
+          response = await fetch(FALLBACK_ENDPOINT, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              code: code,
+              filename: "leetcode_solution.py",
+              problem_context: problemContext,
+              test_cases: testCases,
+              max_candidates: 10
+            }),
+            signal: controller.signal
+          });
+        }
         clearTimeout(timeoutId);
       } catch (networkErr) {
         clearTimeout(timeoutId);
         setApiStatus("offline", "Offline");
         if (networkErr.name === "AbortError") {
-          throw new Error("Analysis request timed out after 10 seconds. Please check server responsiveness.");
+          throw new Error("Analysis request was cancelled or timed out.");
         }
         throw new Error(
           "Cannot connect to EdgeMind API at http://127.0.0.1:8000. Is the server running? Start it with: python -m uvicorn core.api:app --host 127.0.0.1 --port 8000"
@@ -1832,19 +2068,67 @@
 
       setApiStatus("connected", "Connected");
 
-      // 9. Parse and validate report
-      let reportData;
-      try {
-        reportData = await response.json();
-      } catch {
-        throw new Error("EdgeMind API returned malformed JSON response.");
+      // 8. Parse report (via SSE stream or legacy JSON)
+      let reportData = null;
+      let streamError = null;
+
+      const contentType = response.headers.get("content-type") || "";
+      if (isStreaming && contentType.includes("text/event-stream")) {
+        await consumeSseStream(response, (eventType, data) => {
+          switch (eventType) {
+            case "status":
+              elLoadingMessage.textContent = data.message || "Initializing agent session...";
+              break;
+            case "analysis_started":
+              elLoadingMessage.textContent = `Analysis started with model ${data.model || "default"}...`;
+              break;
+            case "progress":
+              elLoadingMessage.textContent = `${data.message || "Analyzing"} (${data.percent || 0}%)`;
+              break;
+            case "tool_started":
+              elLoadingMessage.textContent = `Executing static tool: ${data.tool_name}...`;
+              break;
+            case "tool_completed":
+              elLoadingMessage.textContent = `Tool ${data.tool_name} completed in ${data.duration_ms}ms`;
+              break;
+            case "response_chunk":
+              elLoadingMessage.textContent = "Synthesizing ranked test intelligence...";
+              break;
+            case "usage":
+              if (data) {
+                renderUsage(data, null);
+              }
+              break;
+            case "completed":
+              reportData = data;
+              break;
+            case "error":
+              streamError = data.message || "Provider error occurred.";
+              break;
+            default:
+              break;
+          }
+        }, controller.signal);
+      } else {
+        try {
+          reportData = await response.json();
+        } catch {
+          throw new Error("EdgeMind API returned malformed JSON response.");
+        }
+      }
+
+      if (streamError) {
+        showError(streamError);
       }
 
       if (!reportData || typeof reportData !== "object" || !("test_intelligence" in reportData)) {
-        throw new Error("API response did not match the expected EdgeMind report schema.");
+        if (!streamError) {
+          throw new Error("API response did not match the expected EdgeMind report schema.");
+        }
+        return;
       }
 
-      // 10. Handle INSUFFICIENT_CONTEXT warning gracefully
+      // 9. Handle INSUFFICIENT_CONTEXT warning gracefully
       if (reportData.status === "INSUFFICIENT_CONTEXT") {
         const warningMsg = (reportData.warnings && reportData.warnings.length > 0)
           ? reportData.warnings[0]
@@ -1852,17 +2136,25 @@
         showError(warningMsg);
       }
 
-      // 11. Render final report
+      // 10. Render final report
       renderReport(reportData);
     } catch (err) {
       showError(err.message || "An unexpected error occurred during analysis.");
     } finally {
+      currentAnalysisController = null;
       setLoading(false);
     }
   }
 
   // Event Listeners
   elBtnAnalyze.addEventListener("click", handleAnalyze);
+  if (elBtnCancelAnalysis) {
+    elBtnCancelAnalysis.addEventListener("click", () => {
+      if (currentAnalysisController) {
+        currentAnalysisController.abort();
+      }
+    });
+  }
   elTabBtnIntel.addEventListener("click", () => switchTab("intel"));
   elTabBtnCode.addEventListener("click", () => switchTab("code"));
 

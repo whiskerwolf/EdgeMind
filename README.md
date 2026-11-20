@@ -361,7 +361,7 @@ docker compose up -d
 docker compose ps
 ```
 
-- **PostgreSQL**: Accessible at `localhost:5432` (`edgemind` database).
+- **PostgreSQL**: Accessible on the host at `localhost:5433` (mapped from container internal port `5432` via `docker-compose.yml` to prevent conflicts with host PostgreSQL services; `edgemind` database).
 
 When Docker is unavailable, EdgeMind gracefully operates with local SQLite (`aiosqlite`) fallback, ensuring the Chrome extension and core intelligence engine are never blocked.
 

@@ -81,6 +81,10 @@ class KnowledgeChunk(Base):
         get_embedding_column_type(1536),
         nullable=True,
     )
+    embedding_384: Mapped[Optional[List[float]]] = mapped_column(
+        get_embedding_column_type(384),
+        nullable=True,
+    )
     chunk_metadata: Mapped[Dict[str, Any]] = mapped_column(
         JSON().with_variant(JSONB(), "postgresql"),
         nullable=False,

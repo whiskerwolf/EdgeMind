@@ -589,8 +589,11 @@ os.system("echo HACKED")
 # REST API Endpoint Tests: POST /api/v1/agent/analyze
 # =============================================================================
 
-def test_api_agent_analyze_endpoint_unauthenticated():
+def test_api_agent_analyze_endpoint_unauthenticated(monkeypatch):
     """Unauthenticated client runs agent endpoint without API key, receiving PROVIDER_UNAVAILABLE with static fallback."""
+    monkeypatch.setattr(get_settings(), "agent_provider", "openai")
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+    monkeypatch.setattr(get_settings(), "edgemind_ai_key", None)
     with TestClient(app) as client:
         payload = {
             "code": "def isPalindrome(s: str) -> bool:\n    return s == s[::-1]",
@@ -681,8 +684,11 @@ async def test_api_agent_analyze_tenant_isolation(sqlite_test_engine):
 
 
 @pytest.mark.anyio
-async def test_api_agent_analyze_authenticated_persistence(sqlite_test_engine):
+async def test_api_agent_analyze_authenticated_persistence(sqlite_test_engine, monkeypatch):
     """Authenticated user request saves full report document into ReportRepository."""
+    monkeypatch.setattr(get_settings(), "agent_provider", "openai")
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+    monkeypatch.setattr(get_settings(), "edgemind_ai_key", None)
     session_factory = async_sessionmaker(sqlite_test_engine, class_=AsyncSession, expire_on_commit=False)
 
     user_id = uuid.uuid4()
@@ -757,8 +763,10 @@ def test_api_agent_analyze_static_only_mode():
 # =============================================================================
 
 @pytest.mark.anyio
-async def test_live_provider_missing_api_key():
+async def test_live_provider_missing_api_key(monkeypatch):
     """When API key is missing, provider returns unavailable finish_reason without pretending to call tools."""
+    monkeypatch.setattr(get_settings(), "openai_api_key", None)
+    monkeypatch.setattr(get_settings(), "edgemind_ai_key", None)
     provider = LiveAgentProvider(api_key=None)
     step = await provider.chat_completion(
         messages=[{"role": "user", "content": "analyze"}],

@@ -32,6 +32,7 @@ from core.auth.service import AuthService
 from core.config import get_settings
 from core.database.connection import close_db, get_db, get_session_factory
 from core.database.models import User
+from core.redis.connection import close_redis_pool, init_redis_pool
 from core.database.repositories import (
     AnalysisRepository,
     ProblemRepository,
@@ -87,9 +88,18 @@ async def lifespan(app: FastAPI):
                 f"Admin bootstrap check skipped or failed: {settings.sanitize_error(str(exc))}"
             )
 
+    # Initialize Redis connection pool (Phase 4)
+    try:
+        await init_redis_pool()
+    except Exception as exc:
+        logger.warning(
+            f"Redis initialization check skipped or failed: {settings.sanitize_error(str(exc))}"
+        )
+
     yield
-    # Gracefully dispose database connection pools on shutdown
+    # Gracefully dispose database and Redis connection pools on shutdown
     await close_db()
+    await close_redis_pool()
 
 
 app = FastAPI(
@@ -113,7 +123,14 @@ app.add_middleware(
     allow_credentials=settings.cors_allow_credentials,
     allow_methods=settings.cors_allow_methods,
     allow_headers=settings.cors_allow_headers,
-    expose_headers=[settings.request_id_header, settings.process_time_header],
+    expose_headers=[
+        settings.request_id_header,
+        settings.process_time_header,
+        "Retry-After",
+        "X-RateLimit-Limit",
+        "X-RateLimit-Remaining",
+        "X-RateLimit-Reset",
+    ],
 )
 
 
@@ -167,14 +184,28 @@ app.include_router(agent_router, prefix="/api/v1")
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Consistent JSON handler for HTTP exceptions."""
     request_id = getattr(request.state, "request_id", None)
+    headers = dict(exc.headers) if getattr(exc, "headers", None) else {}
+    if request_id:
+        headers[settings.request_id_header] = request_id
+
+    content: Dict[str, Any] = {
+        "error": exc.detail if isinstance(exc.detail, str) and exc.status_code < 500 else "HTTP Error",
+        "detail": str(exc.detail),
+        "request_id": request_id,
+    }
+
+    if exc.status_code == 429:
+        content["error"] = "Rate limit exceeded"
+        if "Retry-After" in headers:
+            try:
+                content["retry_after"] = int(headers["Retry-After"])
+            except (ValueError, TypeError):
+                pass
+
     return JSONResponse(
         status_code=exc.status_code,
-        content={
-            "error": exc.detail if isinstance(exc.detail, str) and exc.status_code < 500 else "HTTP Error",
-            "detail": str(exc.detail),
-            "request_id": request_id,
-        },
-        headers={settings.request_id_header: request_id} if request_id else None,
+        content=content,
+        headers=headers if headers else None,
     )
 
 

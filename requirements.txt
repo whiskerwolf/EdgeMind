@@ -13,3 +13,4 @@ greenlet>=3.0.0
 pyjwt>=2.8.0
 pwdlib[argon2]>=0.2.0
 pgvector>=0.2.0
+redis>=5.0.0

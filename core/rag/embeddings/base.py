@@ -6,7 +6,7 @@ batching support, provider availability checks, and error sanitization.
 """
 
 from abc import ABC, abstractmethod
-from typing import List
+from typing import Any, List, Optional
 
 
 class EmbeddingError(Exception):
@@ -64,3 +64,8 @@ class BaseEmbeddingProvider(ABC):
     def is_available(self) -> bool:
         """Return True if the provider is fully configured with required credentials."""
         pass
+
+    @property
+    def last_usage(self) -> Any:
+        """Return the TokenUsage of the most recent embedding call, if available."""
+        return None

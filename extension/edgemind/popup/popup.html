@@ -108,6 +108,7 @@
         <div class="radar-core"></div>
       </div>
       <p id="loading-message" class="state-message">Analyzing AST, evaluating domain partitions, and synthesizing edge-case candidates...</p>
+      <button id="btn-cancel-analysis" type="button" class="btn btn-secondary btn-sm" style="margin-top: 10px;">Cancel Analysis</button>
     </div>
 
     <!-- Error Banner -->
@@ -161,6 +162,43 @@
           <div class="mode-meta-item">
             <span class="mode-meta-label">Parameters Identified:</span>
             <span id="mode-parameters-identified" class="mode-meta-value">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Usage & Cost Card -->
+      <div id="usage-card" class="card mode-banner hidden">
+        <div class="mode-header">
+          <div class="mode-header-left">
+            <span class="mode-beacon-dot"></span>
+            <span class="mode-title">AI TOKEN &amp; COST MONITORING</span>
+          </div>
+          <span id="usage-source-badge" class="badge badge-neutral">Actual Provider</span>
+        </div>
+        <div class="mode-meta-grid">
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Model:</span>
+            <span id="usage-model-value" class="mode-meta-value">--</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Prompt Tokens:</span>
+            <span id="usage-prompt-tokens" class="mode-meta-value">0</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Completion Tokens:</span>
+            <span id="usage-completion-tokens" class="mode-meta-value">0</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Total Tokens:</span>
+            <span id="usage-total-tokens" class="mode-meta-value">0</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Est. Cost (USD):</span>
+            <span id="usage-cost-value" class="mode-meta-value">--</span>
+          </div>
+          <div class="mode-meta-item">
+            <span class="mode-meta-label">Requests:</span>
+            <span id="usage-requests-count" class="mode-meta-value">0</span>
           </div>
         </div>
       </div>

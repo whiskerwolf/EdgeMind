@@ -15,6 +15,19 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from core.cost.models import AgentUsageSummary, TokenUsage, UsageSource
+
+from core.sanitization import (
+    normalize_unicode,
+    sanitize_problem_context_dict,
+    sanitize_recursive_value,
+    sanitize_tool_arguments_dict,
+    strip_null_bytes,
+    validate_filename_label,
+    validate_source_code,
+    validate_tool_name,
+)
+
 
 class AgentStatus(str, Enum):
     """Execution status for the multi-step agent session."""
@@ -46,14 +59,24 @@ class ToolCall(BaseModel):
         description="Parsed argument dictionary or JSON argument string",
     )
 
+    @field_validator("name")
+    @classmethod
+    def validate_tool_identifier(cls, v: str) -> str:
+        return validate_tool_name(v)
+
     @field_validator("arguments", mode="before")
     @classmethod
     def parse_arguments_json(cls, v: Any) -> Any:
         if isinstance(v, str):
             try:
-                return json.loads(v)
+                parsed = json.loads(v)
+                if isinstance(parsed, dict):
+                    return sanitize_tool_arguments_dict(parsed)
+                return parsed
             except Exception:
                 return v
+        if isinstance(v, dict):
+            return sanitize_tool_arguments_dict(v)
         return v
 
     def get_arguments_dict(self) -> Dict[str, Any]:
@@ -101,6 +124,10 @@ class AgentStepResult(BaseModel):
     error: Optional[str] = None
     error_type: Optional[str] = None
     status_code: Optional[int] = None
+    chunks: Optional[List[str]] = Field(default=None, description="Optional streamable token chunks")
+    usage: Optional[TokenUsage] = Field(default=None, description="Captured token usage for this step")
+    request_id: Optional[str] = Field(default=None, description="Provider request ID")
+    model: Optional[str] = Field(default=None, description="Model used for this step")
 
 
 class AgentState(BaseModel):
@@ -114,6 +141,7 @@ class AgentState(BaseModel):
     max_tool_calls: int = 15
     messages: List[AgentMessage] = Field(default_factory=list)
     tool_executions: List[ToolExecutionRecord] = Field(default_factory=list)
+    usage_records: List[TokenUsage] = Field(default_factory=list)
     status: AgentStatus = AgentStatus.SUCCESS
     final_summary: Optional[str] = None
     accumulated_context: Dict[str, Any] = Field(default_factory=dict)
@@ -134,6 +162,19 @@ class ParseConstraintsArgs(BaseModel):
         description="Optional list of parameter names known from function signature",
     )
 
+    @field_validator("raw_constraints")
+    @classmethod
+    def sanitize_constraints_list(cls, v: List[str]) -> List[str]:
+        if not isinstance(v, list):
+            raise TypeError("raw_constraints must be a list of strings.")
+        cleaned: List[str] = []
+        for item in v[:50]:
+            if isinstance(item, str):
+                s = strip_null_bytes(normalize_unicode(item)).strip()
+                if s:
+                    cleaned.append(s[:500])
+        return cleaned
+
 
 class AnalyzeProblemStructureArgs(BaseModel):
     """Arguments for the analyze_problem_structure tool."""
@@ -146,6 +187,11 @@ class AnalyzeProblemStructureArgs(BaseModel):
         default=None,
         description="Optional list of baseline test cases to infer parameter types from",
     )
+
+    @field_validator("code")
+    @classmethod
+    def validate_code_security(cls, v: str) -> str:
+        return validate_source_code(v)
 
 
 class DetectCoverageGapsArgs(BaseModel):
@@ -202,6 +248,16 @@ class RetrieveKnowledgeContextArgs(BaseModel):
         le=1.0,
         description="Minimum cosine similarity score threshold for relevance",
     )
+
+    @field_validator("query")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        cleaned = strip_null_bytes(normalize_unicode(v)).strip()
+        if len(cleaned) < 2:
+            raise ValueError("Query must be at least 2 characters.")
+        if len(cleaned) > 2000:
+            cleaned = cleaned[:2000]
+        return cleaned
 
 
 class GenerateCandidateInputsArgs(BaseModel):
@@ -316,13 +372,27 @@ class AgentAnalyzeRequest(BaseModel):
     @field_validator("code")
     @classmethod
     def validate_code(cls, v: str) -> str:
-        if not isinstance(v, str):
-            raise TypeError("Source code must be a string.")
-        cleaned = v.strip()
-        if not cleaned:
-            raise ValueError("Source code must not be empty or whitespace-only.")
-        if len(v.encode("utf-8")) > 65536:
-            raise ValueError("Source code exceeds maximum allowed size of 64 KiB (65,536 bytes).")
+        return validate_source_code(v)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return validate_filename_label(v)
+        return v
+
+    @field_validator("problem_context")
+    @classmethod
+    def validate_problem_context(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is not None:
+            return sanitize_problem_context_dict(v)
+        return v
+
+    @field_validator("test_cases")
+    @classmethod
+    def validate_test_cases(cls, v: Optional[List[Any]]) -> Optional[List[Any]]:
+        if v is not None:
+            return sanitize_recursive_value(v)
         return v
 
     @field_validator("static_only")
@@ -366,5 +436,53 @@ class AgentAnalyzeResponse(BaseModel):
         default=None,
         description="UUID of the persisted PostgreSQL JSONB report document (if saved)",
     )
+    usage: Optional[AgentUsageSummary] = Field(
+        default=None,
+        description="Aggregated token usage and estimated cost accounting",
+    )
     warnings: List[str] = Field(default_factory=list)
     limitations: List[str] = Field(default_factory=list)
+
+
+# -----------------------------------------------------------------------------
+# Server-Sent Events (SSE) Streaming Schemas
+# -----------------------------------------------------------------------------
+
+class SSEEventType(str, Enum):
+    """Defined event types for the EdgeMind SSE streaming response."""
+    STATUS = "status"
+    ANALYSIS_STARTED = "analysis_started"
+    TOOL_STARTED = "tool_started"
+    TOOL_COMPLETED = "tool_completed"
+    PROGRESS = "progress"
+    RESPONSE_CHUNK = "response_chunk"
+    COMPLETED = "completed"
+    ERROR = "error"
+    USAGE = "usage"
+
+
+def format_sse_event(
+    event_type: Union[SSEEventType, str],
+    data: Any,
+    event_id: Optional[int] = None,
+) -> str:
+    """
+    Format structured payload into RFC 8895 Server-Sent Events wire format.
+    Guarantees sequential event IDs, correct event naming, JSON serialization,
+    and double newline termination.
+    """
+    evt_name = event_type.value if isinstance(event_type, SSEEventType) else str(event_type)
+    lines: List[str] = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {evt_name}")
+
+    if isinstance(data, BaseModel):
+        payload_str = json.dumps(data.model_dump(mode="json"))
+    elif isinstance(data, (dict, list)):
+        payload_str = json.dumps(data, default=str)
+    else:
+        payload_str = json.dumps({"message": str(data)}, default=str)
+
+    lines.append(f"data: {payload_str}")
+    return "\n".join(lines) + "\n\n"

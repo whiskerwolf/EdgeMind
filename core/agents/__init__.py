@@ -11,6 +11,8 @@ from core.agents.provider import (
     BaseAgentProvider,
     LiveAgentProvider,
     MockAgentProvider,
+    OllamaAgentProvider,
+    ThinkTagFilter,
 )
 from core.agents.schemas import (
     AgentAnalyzeRequest,
@@ -34,6 +36,8 @@ __all__ = [
     "BaseAgentProvider",
     "MockAgentProvider",
     "LiveAgentProvider",
+    "OllamaAgentProvider",
+    "ThinkTagFilter",
     "ToolRegistry",
     "RegisteredTool",
     "default_tool_registry",

@@ -17,6 +17,8 @@ from core.config import get_settings
 from core.rag.embeddings.base import BaseEmbeddingProvider
 from core.rag.embeddings.mock import MockEmbeddingProvider
 from core.rag.embeddings.openai_provider import OpenAIEmbeddingProvider
+from core.redis.cache import build_cache_key, default_cache_service
+from core.sanitization import sanitize_text
 
 logger = logging.getLogger("edgemind.rag.retrieval.service")
 
@@ -58,9 +60,10 @@ class RetrievalResult:
     embedding_model: str
     embedding_provider: str = "mock"
     is_mock: bool = True
+    usage: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "query": self.query,
             "top_k": self.top_k,
             "similarity_threshold": self.similarity_threshold,
@@ -71,6 +74,12 @@ class RetrievalResult:
             "embedding_provider": self.embedding_provider,
             "is_mock": self.is_mock,
         }
+        if self.usage is not None:
+            if hasattr(self.usage, "model_dump"):
+                d["usage"] = self.usage.model_dump(mode="json")
+            else:
+                d["usage"] = self.usage
+        return d
 
 
 class VectorRetrievalService:
@@ -86,12 +95,13 @@ class VectorRetrievalService:
         default_similarity_threshold: Optional[float] = None,
     ):
         settings = get_settings()
+        self.settings = settings
         self.db = db
         if embedding_provider:
             self.embedding_provider = embedding_provider
         else:
-            live = OpenAIEmbeddingProvider()
-            self.embedding_provider = live if live.is_available() else MockEmbeddingProvider()
+            from core.rag.embeddings import get_rag_embedding_provider
+            self.embedding_provider = get_rag_embedding_provider()
 
         self.top_k = default_top_k or settings.rag_top_k
         self.similarity_threshold = (
@@ -120,7 +130,7 @@ class VectorRetrievalService:
         k = top_k or self.top_k
         threshold = similarity_threshold if similarity_threshold is not None else self.similarity_threshold
 
-        clean_query = query.strip()
+        clean_query = sanitize_text(query, max_length=2000, allow_newlines=False)
         if not clean_query:
             duration = (time.perf_counter() - start_time) * 1000.0
             return RetrievalResult(
@@ -139,9 +149,54 @@ class VectorRetrievalService:
         if len(clean_query) > 2000:
             clean_query = clean_query[:2000]
 
+        # Check Cache (Phase 4)
+        cache_key = build_cache_key(
+            namespace="rag_retrieval",
+            key_data={
+                "query": clean_query,
+                "top_k": k,
+                "threshold": threshold,
+                "model": self.embedding_provider.model_name,
+            },
+            tenant_id=user_id,
+            project_id=project_id,
+        )
+        cached = await default_cache_service.get(cache_key)
+        if cached is not None and isinstance(cached, dict):
+            try:
+                chunks = [
+                    RetrievedChunk(
+                        chunk_id=uuid.UUID(c["chunk_id"]) if isinstance(c["chunk_id"], str) else c["chunk_id"],
+                        document_id=uuid.UUID(c["document_id"]) if isinstance(c["document_id"], str) else c["document_id"],
+                        title=c.get("title", "Knowledge Reference"),
+                        content=c.get("content", ""),
+                        similarity_score=float(c.get("similarity_score", 0.0)),
+                        source_uri=c.get("source_uri"),
+                        metadata=c.get("metadata", {}),
+                        is_global=c.get("is_global", False),
+                    )
+                    for c in cached.get("chunks", [])
+                ]
+                duration = (time.perf_counter() - start_time) * 1000.0
+                return RetrievalResult(
+                    query=clean_query,
+                    top_k=k,
+                    similarity_threshold=threshold,
+                    chunks=chunks,
+                    total_retrieved=len(chunks),
+                    execution_duration_ms=duration,
+                    embedding_model=cached.get("embedding_model", self.embedding_provider.model_name),
+                    embedding_provider=cached.get("embedding_provider", self.embedding_provider.provider_name),
+                    is_mock=cached.get("is_mock", self.embedding_provider.is_mock),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to deserialize cached retrieval result: {e}")
+
         # 1. Generate query embedding
+        usage = None
         try:
             query_embedding = await self.embedding_provider.embed_text(clean_query)
+            usage = getattr(self.embedding_provider, "last_usage", None)
         except Exception as exc:
             logger.error(f"Failed to generate query embedding: {exc}")
             duration = (time.perf_counter() - start_time) * 1000.0
@@ -155,6 +210,7 @@ class VectorRetrievalService:
                 embedding_model=self.embedding_provider.model_name,
                 embedding_provider=self.embedding_provider.provider_name,
                 is_mock=self.embedding_provider.is_mock,
+                usage=usage,
             )
 
         # 2. If database is not attached (or in-memory mock context)
@@ -170,6 +226,7 @@ class VectorRetrievalService:
                 embedding_model=self.embedding_provider.model_name,
                 embedding_provider=self.embedding_provider.provider_name,
                 is_mock=self.embedding_provider.is_mock,
+                usage=usage,
             )
 
         # 3. Query repository
@@ -201,7 +258,7 @@ class VectorRetrievalService:
             )
 
         duration = (time.perf_counter() - start_time) * 1000.0
-        return RetrievalResult(
+        result = RetrievalResult(
             query=clean_query,
             top_k=k,
             similarity_threshold=threshold,
@@ -211,4 +268,13 @@ class VectorRetrievalService:
             embedding_model=self.embedding_provider.model_name,
             embedding_provider=self.embedding_provider.provider_name,
             is_mock=self.embedding_provider.is_mock,
+            usage=usage,
         )
+        # Cache retrieved results
+        if self.db is not None:
+            await default_cache_service.set(
+                cache_key,
+                result.to_dict(),
+                ttl=self.settings.cache_default_ttl,
+            )
+        return result

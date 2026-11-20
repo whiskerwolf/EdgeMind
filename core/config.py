@@ -12,7 +12,7 @@ from functools import lru_cache
 import os
 import re
 from typing import List, Optional
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -72,18 +72,59 @@ class Settings(BaseSettings):
     request_id_header: str = Field(default="X-Request-ID", description="HTTP header name for request correlation ID")
     process_time_header: str = Field(default="X-Process-Time", description="HTTP header name for latency in milliseconds")
 
+    # AI Reasoning Provider Selection & Local Ollama
+    agent_provider: str = Field(
+        default="ollama",
+        validation_alias=AliasChoices("edgemind_agent_provider", "agent_provider", "EDGEMIND_AGENT_PROVIDER", "AGENT_PROVIDER"),
+        description="Active AI agent reasoning provider ('ollama' or 'openai')",
+    )
+    ollama_base_url: str = Field(
+        default="http://127.0.0.1:11434",
+        validation_alias=AliasChoices("ollama_base_url", "edgemind_ollama_base_url", "OLLAMA_BASE_URL", "EDGEMIND_OLLAMA_BASE_URL"),
+        description="Base URL for local Ollama server",
+    )
+    ollama_model: str = Field(
+        default="qwen3:4b",
+        validation_alias=AliasChoices("ollama_model", "edgemind_ollama_model", "OLLAMA_MODEL", "EDGEMIND_OLLAMA_MODEL"),
+        description="Default model for local Ollama reasoning",
+    )
+    ollama_timeout: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("ollama_timeout", "edgemind_ollama_timeout", "OLLAMA_TIMEOUT", "EDGEMIND_OLLAMA_TIMEOUT"),
+        description="Request timeout in seconds for local Ollama inference",
+    )
+
     # External AI Reasoning & Secrets
     edgemind_ai_key: Optional[str] = Field(default=None, description="Primary EdgeMind AI reasoning API key")
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
+    openai_model: str = Field(default="gpt-4o-mini", description="Default OpenAI model for AI reasoning")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", description="OpenAI API base URL endpoint")
 
     # Multi-Step AI Agent & Tool Calling
     agent_max_iterations: int = Field(default=5, description="Maximum iterative reasoning cycles for the multi-step agent")
     agent_max_tool_calls: int = Field(default=15, description="Maximum total tool executions allowed per agent session")
     agent_tool_timeout: float = Field(default=10.0, description="Per-tool execution timeout in seconds")
     agent_session_timeout: float = Field(default=60.0, description="Maximum total wall-clock timeout for an agent session in seconds")
+    agent_pricing_version: str = Field(default="2026-11-01", description="Default pricing catalog version for API cost calculation")
+    agent_enable_local_token_estimates: bool = Field(default=False, description="Whether to compute clearly labeled local token estimates when provider metadata is absent")
 
     # Retrieval-Augmented Generation (RAG) & Vector Storage
+    rag_embedding_provider: str = Field(
+        default="ollama",
+        validation_alias=AliasChoices("rag_embedding_provider", "edgemind_rag_embedding_provider", "RAG_EMBEDDING_PROVIDER", "EDGEMIND_RAG_EMBEDDING_PROVIDER"),
+        description="Active embedding provider for RAG ('ollama', 'openai', 'mock')",
+    )
+    ollama_embedding_model: str = Field(
+        default="all-minilm:latest",
+        validation_alias=AliasChoices("ollama_embedding_model", "edgemind_ollama_embedding_model", "OLLAMA_EMBEDDING_MODEL", "EDGEMIND_OLLAMA_EMBEDDING_MODEL"),
+        description="Local Ollama embedding model identifier",
+    )
+    ollama_embedding_dimensions: int = Field(
+        default=384,
+        validation_alias=AliasChoices("ollama_embedding_dimensions", "edgemind_ollama_embedding_dimensions", "OLLAMA_EMBEDDING_DIMENSIONS", "EDGEMIND_OLLAMA_EMBEDDING_DIMENSIONS"),
+        description="Vector dimension size for local Ollama embeddings",
+    )
     rag_embedding_model: str = Field(default="text-embedding-3-small", description="Default RAG embedding model identifier")
     rag_embedding_dimensions: int = Field(default=1536, description="Vector dimension size for embeddings")
     rag_chunk_size: int = Field(default=500, description="Default character chunk size for document processing")
@@ -94,7 +135,7 @@ class Settings(BaseSettings):
     # Database Settings (PostgreSQL / SQLAlchemy 2.0 Async)
     database_url: Optional[str] = Field(
         default=None,
-        description="Async database URL (e.g. postgresql+asyncpg://postgres:postgres@localhost:5432/edgemind or sqlite+aiosqlite:///./edgemind.db)",
+        description="Async database URL (e.g. postgresql+asyncpg://postgres:postgres@localhost:5433/edgemind [host port 5433 mapped to container 5432] or sqlite+aiosqlite:///./edgemind.db)",
     )
     db_pool_size: int = Field(default=10, description="SQLAlchemy connection pool size")
     db_max_overflow: int = Field(default=20, description="Maximum overflow connections beyond pool_size")
@@ -115,10 +156,97 @@ class Settings(BaseSettings):
     admin_bootstrap_email: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin email")
     admin_bootstrap_password: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin password")
 
+    # Redis & Distributed Caching (Phase 4)
+    redis_url: Optional[str] = Field(
+        default=None,
+        description="Redis connection URL for caching (e.g. redis://127.0.0.1:6379/0)",
+    )
+    redis_password: Optional[str] = Field(
+        default=None,
+        description="Optional Redis password for authenticated cache instances",
+    )
+    redis_rate_limit_url: Optional[str] = Field(
+        default=None,
+        description="Optional dedicated Redis connection URL for rate limiting (e.g. redis://127.0.0.1:6380/0)",
+    )
+    redis_rate_limit_password: Optional[str] = Field(
+        default=None,
+        description="Optional Redis password for authenticated rate-limit instances",
+    )
+    redis_pool_size: int = Field(default=20, description="Redis connection pool size")
+    redis_connect_timeout: float = Field(default=3.0, description="Redis connection timeout in seconds")
+    redis_socket_timeout: float = Field(default=3.0, description="Redis socket read/write timeout in seconds")
+    cache_enabled: bool = Field(default=True, description="Enable application-level Redis caching")
+    cache_default_ttl: int = Field(default=3600, description="Default cache TTL in seconds")
+    cache_key_prefix: str = Field(default="edgemind:cache:v1", description="Global prefix/version namespace for cache keys")
+
+    # Distributed Rate Limiting (Phase 4)
+    rate_limit_enabled: bool = Field(default=True, description="Enable distributed rate limiting via Redis")
+    rate_limit_fallback_allow: bool = Field(
+        default=False,
+        description="Fallback policy when Redis is unavailable: False = fail-closed (reject request), True = fail-open (allow request)",
+    )
+    rate_limit_default_limit: int = Field(default=60, description="Default allowed requests per window")
+    rate_limit_default_window: int = Field(default=60, description="Default rate limit window in seconds")
+    rate_limit_agent_limit: int = Field(default=10, description="Rate limit for expensive agent reasoning endpoints per window")
+    rate_limit_agent_window: int = Field(default=60, description="Window size in seconds for agent reasoning endpoints")
+    trusted_proxy_ips: List[str] = Field(
+        default_factory=lambda: ["127.0.0.1", "::1"],
+        description="Trusted reverse proxy IP addresses allowed to provide X-Forwarded-For client IP",
+    )
+
     @property
     def is_database_enabled(self) -> bool:
         """Check if a database URL is configured and non-empty."""
         return bool(self.database_url and self.database_url.strip())
+
+    @property
+    def is_redis_enabled(self) -> bool:
+        """Check if any Redis URL is configured and non-empty."""
+        return bool(
+            (self.redis_url and self.redis_url.strip())
+            or (self.redis_rate_limit_url and self.redis_rate_limit_url.strip())
+        )
+
+    @property
+    def is_rate_limit_redis_dedicated(self) -> bool:
+        """Return True if a dedicated rate-limit Redis instance is configured."""
+        return bool(
+            self.redis_rate_limit_url
+            and self.redis_rate_limit_url.strip()
+            and self.redis_rate_limit_url.strip() != (self.redis_url or "").strip()
+        )
+
+    def validate_redis_security(self) -> None:
+        """
+        Enforce Redis security constraints.
+        In production environment, explicitly configured REDIS_PASSWORD is required for all active Redis instances.
+        Fails fast if password is missing or blank in production.
+        """
+        from urllib.parse import urlparse
+
+        if self.environment.lower() == "production" and self.is_redis_enabled:
+            # Check cache redis password
+            if self.redis_url and self.redis_url.strip():
+                has_pass = bool(
+                    (self.redis_password and self.redis_password.strip())
+                    or ("@" in self.redis_url and urlparse(self.redis_url).password)
+                )
+                if not has_pass:
+                    raise RuntimeError(
+                        "REDIS_PASSWORD must be explicitly configured in production environment."
+                    )
+            # Check dedicated rate limit redis password
+            if self.is_rate_limit_redis_dedicated:
+                has_rl_pass = bool(
+                    (self.redis_rate_limit_password and self.redis_rate_limit_password.strip())
+                    or (self.redis_password and self.redis_password.strip())
+                    or ("@" in self.redis_rate_limit_url and urlparse(self.redis_rate_limit_url).password)
+                )
+                if not has_rl_pass:
+                    raise RuntimeError(
+                        "REDIS_RATE_LIMIT_PASSWORD or REDIS_PASSWORD must be explicitly configured in production environment."
+                    )
 
     def get_jwt_secret_key(self) -> str:
         """
@@ -149,25 +277,30 @@ class Settings(BaseSettings):
 
     def sanitize_error(self, message: str) -> str:
         """
-        Redact sensitive API keys, database credentials, or JWT tokens from error or log messages.
+        Redact sensitive API keys, database credentials, JWT tokens, or Redis passwords from error or log messages.
         """
         if not message:
             return ""
-        sanitized = str(message)
-        # Redact database passwords from connection URLs (e.g. postgresql://user:pass@host)
-        sanitized = re.sub(r"://([^:]+):([^@]+)@", r"://\1:[REDACTED]@", sanitized)
-        # Redact Authorization Bearer tokens
-        sanitized = re.sub(r"Bearer\s+[A-Za-z0-9\-_\.]+", "Bearer [REDACTED]", sanitized)
-        # Redact JWT secret key if present
-        if self.jwt_secret_key and self.jwt_secret_key in sanitized:
-            sanitized = sanitized.replace(self.jwt_secret_key, "[REDACTED]")
-        active_key = self.get_ai_api_key()
-        if active_key and active_key in sanitized:
-            sanitized = sanitized.replace(active_key, "[REDACTED]")
-        for key in (self.edgemind_ai_key, self.gemini_api_key, self.openai_api_key):
-            if key and key in sanitized:
-                sanitized = sanitized.replace(key, "[REDACTED]")
-        return sanitized
+        from core.sanitization import redact_secrets
+        custom = [
+            self.jwt_secret_key,
+            self.edgemind_ai_key,
+            self.gemini_api_key,
+            self.openai_api_key,
+            self.admin_bootstrap_password,
+            self.redis_password,
+            self.redis_rate_limit_password,
+        ]
+        from urllib.parse import urlparse
+        for url_val in [self.redis_url, self.redis_rate_limit_url]:
+            if url_val and "@" in url_val:
+                try:
+                    parsed = urlparse(url_val)
+                    if parsed.password:
+                        custom.append(parsed.password)
+                except Exception:
+                    pass
+        return redact_secrets(str(message), custom_secrets=[c for c in custom if c and len(c) >= 6])
 
 
 @lru_cache()

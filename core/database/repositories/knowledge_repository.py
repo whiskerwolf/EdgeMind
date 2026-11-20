@@ -112,6 +112,7 @@ class KnowledgeRepository:
             existing.title = doc.title
             existing.source_uri = doc.source_uri
             existing.doc_metadata = doc.metadata
+            existing.chunks.clear()
             await self.session.execute(
                 delete(KnowledgeChunk).where(KnowledgeChunk.document_id == existing.id)
             )
@@ -132,6 +133,21 @@ class KnowledgeRepository:
             self.session.add(db_doc)
 
         for chunk in chunks:
+            # Separate 384-dimensional and 1536-dimensional storage
+            emb_1536 = None
+            emb_384 = None
+            dim = chunk.vector_dim or (len(chunk.embedding) if chunk.embedding else None)
+            if chunk.embedding is not None:
+                if dim == 384:
+                    emb_384 = chunk.embedding
+                elif dim == 1536:
+                    emb_1536 = chunk.embedding
+                else:
+                    if len(chunk.embedding) == 384:
+                        emb_384 = chunk.embedding
+                    else:
+                        emb_1536 = chunk.embedding
+
             db_chunk = KnowledgeChunk(
                 id=chunk.id,
                 document_id=doc_id,
@@ -139,8 +155,9 @@ class KnowledgeRepository:
                 content=chunk.content,
                 content_hash=chunk.content_hash,
                 embedding_model=chunk.embedding_model,
-                vector_dim=chunk.vector_dim,
-                embedding=chunk.embedding,
+                vector_dim=dim,
+                embedding=emb_1536,
+                embedding_384=emb_384,
                 chunk_metadata=chunk.metadata,
                 user_id=doc.user_id,
                 project_id=doc.project_id,
@@ -149,6 +166,17 @@ class KnowledgeRepository:
             self.session.add(db_chunk)
 
         await self.session.flush()
+
+        # Invalidate retrieval caches (Phase 4 & 5)
+        try:
+            from core.redis.cache import default_cache_service
+            if doc.user_id:
+                await default_cache_service.invalidate_tenant(tenant_id=doc.user_id, project_id=doc.project_id)
+            if doc.is_global or not doc.user_id:
+                await default_cache_service.invalidate_global_retrieval()
+        except Exception:
+            pass
+
         return db_doc
 
     def build_postgres_search_query(
@@ -162,6 +190,7 @@ class KnowledgeRepository:
         """
         Construct PostgreSQL query utilizing pgvector's <=> cosine distance operator.
         Enforces tenant isolation in SQL WHERE prior to database-side ORDER BY and LIMIT.
+        Isolates 384-dimensional vs 1536-dimensional vector columns.
         """
         if user_id is not None:
             tenant_condition = or_(
@@ -171,14 +200,17 @@ class KnowledgeRepository:
         else:
             tenant_condition = KnowledgeChunk.is_global.is_(True)
 
-        distance_expr = KnowledgeChunk.embedding.cosine_distance(query_embedding)
+        dim = len(query_embedding)
+        target_col = KnowledgeChunk.embedding_384 if dim == 384 else KnowledgeChunk.embedding
+        distance_expr = target_col.cosine_distance(query_embedding)
         max_distance = 1.0 - similarity_threshold
 
         stmt = (
             select(KnowledgeChunk, distance_expr.label("distance"))
             .options(selectinload(KnowledgeChunk.document))
             .where(tenant_condition)
-            .where(KnowledgeChunk.embedding.isnot(None))
+            .where(target_col.isnot(None))
+            .where(KnowledgeChunk.vector_dim == dim)
         )
 
         if project_id is not None:
@@ -208,11 +240,14 @@ class KnowledgeRepository:
         """
         Search vector store for chunks matching query_embedding, enforcing tenant isolation.
         On PostgreSQL with pgvector, executes genuine database-side cosine distance (<=>)
-        ordering and top-k selection. On SQLite/other dialects, falls back to in-memory cosine ranking.
+        ordering and top-k selection with dimension isolation (384 vs 1536).
+        On SQLite/other dialects, falls back to in-memory cosine ranking.
         Returns list of (KnowledgeChunk, similarity_score) sorted descending by similarity.
         """
         if not query_embedding:
             return []
+
+        dim = len(query_embedding)
 
         # Determine if database dialect is PostgreSQL with pgvector support
         dialect_name = ""
@@ -227,8 +262,9 @@ class KnowledgeRepository:
                 dialect_name = ""
 
         is_postgres = dialect_name == "postgresql"
+        target_col = KnowledgeChunk.embedding_384 if dim == 384 else KnowledgeChunk.embedding
 
-        if is_postgres and hasattr(KnowledgeChunk.embedding, "cosine_distance"):
+        if is_postgres and hasattr(target_col, "cosine_distance"):
             try:
                 pg_stmt = self.build_postgres_search_query(
                     query_embedding=query_embedding,
@@ -249,10 +285,6 @@ class KnowledgeRepository:
                 pass
 
         # Build tenant isolation filter
-        # Rule: A user can access:
-        # 1. Any global chunk (is_global == True)
-        # 2. Their own private chunks (user_id == current_user.id)
-        # Anonymous users can ONLY access global chunks.
         if user_id is not None:
             tenant_condition = or_(
                 KnowledgeChunk.is_global.is_(True),
@@ -265,11 +297,9 @@ class KnowledgeRepository:
             select(KnowledgeChunk)
             .options(selectinload(KnowledgeChunk.document))
             .where(tenant_condition)
-            .where(KnowledgeChunk.embedding.isnot(None))
         )
 
         if project_id is not None:
-            # If a project is specified, include global, project-specific, or user chunks
             stmt = stmt.where(
                 or_(
                     KnowledgeChunk.is_global.is_(True),
@@ -284,11 +314,15 @@ class KnowledgeRepository:
         if not all_candidate_chunks:
             return []
 
-        # Score and rank candidates by cosine similarity
+        # Score and rank candidates by cosine similarity with strict dimension isolation
         scored_chunks: List[Tuple[KnowledgeChunk, float]] = []
         for chunk in all_candidate_chunks:
-            chunk_vec = chunk.embedding
-            if not chunk_vec or not isinstance(chunk_vec, list):
+            if dim == 384:
+                chunk_vec = chunk.embedding_384 if chunk.embedding_384 is not None else (chunk.embedding if chunk.vector_dim == 384 else None)
+            else:
+                chunk_vec = chunk.embedding if chunk.vector_dim in (None, dim, 1536) else None
+
+            if not chunk_vec or not isinstance(chunk_vec, list) or len(chunk_vec) != dim:
                 continue
             sim = compute_cosine_similarity(query_embedding, chunk_vec)
             if sim >= similarity_threshold:
@@ -318,6 +352,21 @@ class KnowledgeRepository:
             if user_id is None or doc.user_id != user_id:
                 return False  # Cannot delete another user's document
 
+        doc_user_id = doc.user_id
+        doc_project_id = doc.project_id
+        doc_is_global = doc.is_global
+
         await self.session.delete(doc)
         await self.session.flush()
+
+        # Invalidate retrieval caches (Phase 4)
+        try:
+            from core.redis.cache import default_cache_service
+            if doc_user_id:
+                await default_cache_service.invalidate_tenant(tenant_id=doc_user_id, project_id=doc_project_id)
+            if doc_is_global:
+                await default_cache_service.invalidate_global_retrieval()
+        except Exception:
+            pass
+
         return True

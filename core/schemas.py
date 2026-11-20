@@ -13,6 +13,20 @@ Defines typed schemas for FastAPI endpoints:
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
+from core.sanitization import (
+    MAX_CONSTRAINTS_COUNT,
+    MAX_CONSTRAINT_ITEM_CHARS,
+    MAX_PROBLEM_DESCRIPTION_CHARS,
+    MAX_TITLE_CHARS,
+    sanitize_problem_context_dict,
+    sanitize_recursive_value,
+    sanitize_text,
+    strip_null_bytes,
+    validate_filename_label,
+    validate_slug,
+    validate_source_code,
+)
+
 
 # -----------------------------------------------------------------------------
 # Common / System Schemas
@@ -48,6 +62,18 @@ class AnalyzeCodeRequest(BaseModel):
     filename: Optional[str] = Field(default="snippet.py", description="Display filename label")
     static_only: Optional[bool] = Field(default=True, description="Enforce static-only analysis")
 
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        return validate_source_code(v)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return validate_filename_label(v)
+        return v
+
 
 class ProblemContextSchema(BaseModel):
     """Schema for programming problem context (LeetCode/custom)."""
@@ -58,6 +84,43 @@ class ProblemContextSchema(BaseModel):
     description: Optional[str] = Field(default=None, description="Problem description text")
     constraints: Optional[List[str]] = Field(default_factory=list, description="List of natural language constraint strings")
     parameters: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Identified problem parameters")
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return sanitize_text(v, max_length=MAX_TITLE_CHARS, allow_newlines=False)
+        return v
+
+    @field_validator("slug")
+    @classmethod
+    def validate_slug_val(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v.strip():
+            try:
+                return validate_slug(v)
+            except ValueError:
+                return sanitize_text(v, max_length=MAX_TITLE_CHARS, allow_newlines=False)
+        return v
+
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return sanitize_text(v, max_length=MAX_PROBLEM_DESCRIPTION_CHARS, allow_newlines=True)
+        return v
+
+    @field_validator("constraints")
+    @classmethod
+    def validate_constraints(cls, v: Optional[List[str]]) -> List[str]:
+        if not v:
+            return []
+        cleaned: List[str] = []
+        for item in v[:MAX_CONSTRAINTS_COUNT]:
+            if item is not None:
+                c = sanitize_text(str(item), max_length=MAX_CONSTRAINT_ITEM_CHARS, allow_newlines=False)
+                if c:
+                    cleaned.append(c)
+        return cleaned
 
 
 class EdgeMindAnalyzeRequest(BaseModel):
@@ -71,6 +134,32 @@ class EdgeMindAnalyzeRequest(BaseModel):
     max_candidates: Optional[int] = Field(default=10, description="Maximum candidate test inputs to generate")
     static_only: Optional[bool] = Field(default=True, description="Enforce static-only analysis")
     project_id: Optional[str] = Field(default=None, description="Optional associated Project UUID")
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        return validate_source_code(v)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return validate_filename_label(v)
+        return v
+
+    @field_validator("problem_context")
+    @classmethod
+    def validate_problem_context(cls, v: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if v is not None:
+            return sanitize_problem_context_dict(v)
+        return v
+
+    @field_validator("test_cases")
+    @classmethod
+    def validate_test_cases(cls, v: Optional[List[Any]]) -> Optional[List[Any]]:
+        if v is not None:
+            return sanitize_recursive_value(v)
+        return v
 
 
 # -----------------------------------------------------------------------------

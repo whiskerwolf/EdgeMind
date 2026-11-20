@@ -10,6 +10,7 @@ from core.database.repositories.knowledge_repository import (
 from core.database.repositories.problem_repository import ProblemRepository
 from core.database.repositories.project_repository import ProjectRepository
 from core.database.repositories.report_repository import ReportRepository
+from core.database.repositories.usage_repository import UsageRepository
 
 __all__ = [
     "AnalysisRepository",
@@ -17,5 +18,6 @@ __all__ = [
     "ProjectRepository",
     "ReportRepository",
     "KnowledgeRepository",
+    "UsageRepository",
     "compute_cosine_similarity",
 ]

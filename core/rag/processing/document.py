@@ -13,6 +13,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from core.config import get_settings
+from core.sanitization import (
+    MAX_TITLE_CHARS,
+    normalize_unicode,
+    sanitize_text,
+    strip_null_bytes,
+    strip_unsafe_control_characters,
+)
 
 
 @dataclass
@@ -65,14 +72,17 @@ class DocumentProcessor:
     def normalize_text(text: str) -> str:
         """
         Normalize text:
+        - Safe Unicode normalization (NFC + surrogate handling)
         - Replace CRLF / CR with LF
-        - Strip null bytes
+        - Strip null bytes and unsafe control characters
         - Collapse consecutive spaces while preserving paragraph breaks
         """
         if not text:
             return ""
-        s = text.replace("\r\n", "\n").replace("\r", "\n")
-        s = s.replace("\x00", "")
+        s = normalize_unicode(text)
+        s = strip_null_bytes(s)
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+        s = strip_unsafe_control_characters(s, keep_newlines=True, keep_tabs=True)
         # Normalize multiple horizontal spaces/tabs
         s = re.sub(r"[ \t]+", " ", s)
         # Collapse 3+ newlines into 2
@@ -165,9 +175,10 @@ class DocumentProcessor:
         doc_id = document_id or uuid.uuid4()
         meta = dict(metadata or {})
 
+        safe_title = sanitize_text(title, max_length=MAX_TITLE_CHARS, allow_newlines=False)
         doc = ProcessedDocument(
             id=doc_id,
-            title=title.strip(),
+            title=safe_title or "Untitled Document",
             content=normalized_content,
             content_hash=content_hash,
             source_uri=source_uri,
