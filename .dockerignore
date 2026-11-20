@@ -1,19 +1,62 @@
-﻿.git
+# ==============================================================================
+# EdgeMind .dockerignore
+# Prevents sensitive files, local environments, and temporary artifacts
+# from being copied into Docker build contexts.
+# ==============================================================================
+
+# Git and version control
+.git
 .gitignore
+
+# Environment configurations and secrets (never leak credentials into images)
 .env
 .env.*
-.venv
-__pycache__
-*.pyc
-*.pyo
+
+# Python virtual environments
+.venv/
+env/
+venv/
+
+# Python compiled bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
 *.pyd
-.pytest_cache
+
+# Testing, coverage, and analysis caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# Tests, build distributions, and documentation
 tests/
 dist/
-logs/
-scripts/*.exe
-scripts/*.log
-scripts/*.pid
-extension/
+build/
 docs/
 *.md
+
+# Runtime logs
+logs/
+*.log
+scripts/*.log
+scripts/*.pid
+
+# Windows native host binaries and Chrome extension (kept as local host components)
+scripts/*.exe
+extension/
+
+# Database files and Redis local persistence dumps
+*.db
+*.sqlite
+*.sqlite3
+*.rdb
+*.aof
+
+# Docker and local override files
+docker-compose*.override.yml

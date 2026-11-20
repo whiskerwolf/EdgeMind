@@ -202,16 +202,33 @@ async def test_live_postgres_vector_pipeline():
             user_a = uuid.uuid4()
             user_b = uuid.uuid4()
 
+            from core.database.models.user import User
+            user_a_obj = User(
+                id=user_a,
+                email=f"user_a_{user_a.hex[:8]}@example.com",
+                password_hash="argon2_fake_hash",
+                full_name="User A",
+                role="user",
+            )
+            user_b_obj = User(
+                id=user_b,
+                email=f"user_b_{user_b.hex[:8]}@example.com",
+                password_hash="argon2_fake_hash",
+                full_name="User B",
+                role="user",
+            )
+            session.add_all([user_a_obj, user_b_obj])
+            await session.commit()
+
             # 1. Store private document for User A
             from core.rag.processing.document import ProcessedChunk, ProcessedDocument
             doc_a = ProcessedDocument(
                 id=uuid.uuid4(),
                 title="User A Python Secrets",
+                content="User A Python Secrets content",
                 source_uri="file:///secrets_a.py",
                 content_hash="hash_a_1234567890abcdef",
                 metadata={"classification": "confidential"},
-                chunks=[],
-                total_chunks=2,
                 user_id=user_a,
                 is_global=False,
             )
@@ -252,11 +269,10 @@ async def test_live_postgres_vector_pipeline():
             doc_global = ProcessedDocument(
                 id=uuid.uuid4(),
                 title="Global Python Guidelines",
+                content="Global Python Guidelines content",
                 source_uri="file:///global_guidelines.md",
                 content_hash="hash_global_abcdef1234567890",
                 metadata={"public": True},
-                chunks=[],
-                total_chunks=1,
                 user_id=None,
                 is_global=True,
             )

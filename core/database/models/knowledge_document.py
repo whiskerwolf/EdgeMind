@@ -69,6 +69,12 @@ class KnowledgeDocument(Base, TimestampMixin):
         default=False,
         index=True,
     )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        default=utc_now,
+        onupdate=utc_now,
+    )
 
     # Relationships
     chunks: Mapped[List["KnowledgeChunk"]] = relationship(

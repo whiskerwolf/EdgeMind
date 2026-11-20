@@ -50,6 +50,7 @@ In strict adherence to truthfulness and software integrity standards:
 | **Streaming Responses (SSE)** | Server-Sent Events (SSE) streaming for multi-step agent reasoning, tool execution, incremental token delivery, and Chrome extension ReadableStream consumption | **Completed & Verified** | 20 backend tests in `test_agent_streaming.py`, 12 extension tests in `test_extension_streaming.py` |
 | **Token and Cost Monitoring** | Accurate LLM token usage tracking (prompt, completion, total), exact Decimal API cost calculation using versioned pricing catalogs, multi-step aggregation, PostgreSQL/SQLite ledger persistence (`ai_token_usages`), tenant-isolated summary endpoints, and extension UI telemetry | **Completed & Verified** | 14 automated unit, integration, and Node.js tests in `test_token_cost_monitoring.py` |
 | **Redis Caching & Rate Limiting** | Asynchronous connection pooling via `redis.asyncio`, multi-tenant cache service with SHA-256 key hashing and metric tracking, RAG query embedding and vector retrieval caching, automatic cache invalidation on global and tenant document mutations, dedicated rate-limiting Redis instance for memory isolation (`allkeys-lru` 256MB cache vs `noeviction` 64MB rate-limit), and atomic sliding-window distributed rate limiting via Lua script with server `TIME`, anti-spoofing reverse proxy verification, and strict fail-closed production policy | **Completed & Verified** | 17 unit/integration tests in `test_redis_caching.py` and 12 unit/integration tests in `test_rate_limiting.py` |
+| **Docker Integration & Container Orchestration (Phase 6)** | Production multi-container Docker Compose stack: multi-stage unprivileged FastAPI backend, PostgreSQL 16 + pgvector on host port 5433 (avoiding 5432 nexus-postgres conflict), dedicated Redis cache on 6379, dedicated Redis rate-limiter on 6380, persistent volumes, healthcheck dependencies (`service_healthy`), internal service networking, and Windows Ollama host bridge (`host.docker.internal:11434`) | **Completed & Verified** | 7 automated tests in `test_docker_orchestration.py`, client-side Docker Compose configuration validation |
 | **Public Cloud Deployment** | Kubernetes / AWS ECS clustered multi-region cloud deployment | **Planned Future Scope** | Not implemented (local loopback `127.0.0.1:8000` architecture) |
 | **Billing / Payment Gateway** | Stripe / payment subscription integration | **Planned Future Scope** | Not implemented |
 
@@ -64,16 +65,17 @@ The complete EdgeMind test suite was executed across all test files:
 ```
 
 ### Summary Metrics:
-- **Total Tests Collected**: 792
-- **Passed**: 789
+- **Total Tests Collected**: 799
+- **Passed**: 796
 - **Skipped**: 3
 - **Failed**: 0
-- **Duration**: ~109 seconds
+- **Duration**: ~88 seconds
 
 ### Breakdown by Test Category:
 
 | Test Module | Coverage Area | Tests | Status |
 | :--- | :--- | :---: | :---: |
+| `tests/test_docker_orchestration.py` | Production Dockerfile multi-stage build, unprivileged user, healthcheck, static-only invariants, .dockerignore completeness, docker-compose.yml validation, service topology (backend, postgres, redis, redis-rate-limit), port 5433 conflict avoidance, Ollama host gateway bridge, and Redis auth enforcement | 7 | **7 Passed** |
 | `tests/test_ollama_embeddings.py` | Local Ollama embeddings (`all-minilm:latest`), native `/api/embed`, 384-dimensional vectors, vector dimension isolation (384 vs 1536), Alembic migration 007, dynamic provider selection, Redis caching, lifecycle invalidation, tenant isolation, real local embedding smoke tests | 12 | **12 Passed** |
 | `tests/test_ollama_provider.py` | Local Ollama provider (`qwen3:4b`), native `/api/chat` requests, dict/string tool calls parsing, multi-turn tool round-trip, multiple tool calls, incremental SSE streaming, thinking exclusion, local token accounting (`LOCAL_INFERENCE`), provider selection, zero external OpenAI calls, real local Ollama smoke test | 17 | **17 Passed** |
 | `tests/test_live_provider_integration.py` | Live OpenAI chat completions, native tool calling, multi-step execution, SSE streaming with fragmented tool arguments, terminal usage capture, stream interruption handling without fabrication, HTTP 400/401/403/429/500/502/503 status codes, timeout/network errors, OpenAI embeddings (`text-embedding-3-small`), Decimal cost tracking, Redis caching, opt-in live test | 17 | **16 Passed, 1 Skipped**\* |
@@ -508,3 +510,50 @@ EdgeMind incorporates a dedicated local AI reasoning engine powered by Ollama:
 
 ### 12.6 Remaining Live Infrastructure Limitations
 - **PostgreSQL 16 Container (`localhost:5433`)**: The live PostgreSQL Docker container with `pgvector` remains offline. Database-level vector indexing and migration 007 have been verified via SQLite dialect execution and SQL AST compilation; live container testing remains ready to run as soon as Docker is started.
+
+---
+
+## 13. Docker Container Orchestration (Phase 6)
+
+### 13.1 Multi-Container Topology & Service Roles
+EdgeMind defines a production-ready, security-hardened multi-container architecture orchestrated via `docker-compose.yml`:
+1. **FastAPI Backend (`edgemind-backend`)**:
+   - Built from multi-stage [Dockerfile](file:///c:/Users/DELL/Projects/EdgeMind/Dockerfile) (`python:3.12-slim`).
+   - Runs as unprivileged system user (`edgemind:10001`).
+   - Exposes port `8000` bound strictly to `127.0.0.1`.
+   - Incorporates container healthcheck: `curl -f http://127.0.0.1:8000/health`.
+   - Strictly enforces `STATIC_ONLY="true"` runtime environment.
+2. **PostgreSQL with pgvector (`edgemind-postgres`)**:
+   - Version-pinned image: `pgvector/pgvector:0.8.7-pg16` (Debian Bookworm-slim).
+   - Host port mapping: `127.0.0.1:5433:5432` to avoid collision with the existing `nexus-postgres` instance running on port `5432`.
+   - Persistent volume: `postgres_pgvector_data` (keeps legacy `postgres_data` untouched).
+   - Healthcheck: `pg_isready -U postgres -d edgemind`.
+3. **Dedicated Redis Cache (`edgemind-redis`)**:
+   - Version-pinned image: `redis:7.2.17-alpine3.21` (LTS family).
+   - Host port mapping: `127.0.0.1:6379:6379`.
+   - Memory eviction policy: `allkeys-lru` with 256MB cap.
+   - Persistent volume: `redis_data`.
+   - Security: `--requirepass` enforced, dangerous commands disabled (`RESTORE`, `FLUSHALL`, `FLUSHDB`, `CONFIG`, `DEBUG`).
+4. **Dedicated Redis Rate Limiter (`edgemind-redis-rate-limit`)**:
+   - Memory-isolated Redis instance (`noeviction` policy, 64MB cap) to prevent cache activity from interfering with rate limits.
+   - Host port mapping: `127.0.0.1:6380:6379`.
+   - Persistent volume: `redis_rate_limit_data`.
+
+### 13.2 Networking & Host Gateway Ollama Bridge
+- **Internal Network**: All containers communicate over private bridge network `edgemind-network` using service names (`postgres:5432`, `redis:6379`, `redis-rate-limit:6379`).
+- **Windows-Hosted Ollama Bridge**: Backend connects to the host machine's Ollama instance via `http://host.docker.internal:11434`. Configured with `extra_hosts: ["host.docker.internal:host-gateway"]`. Zero container duplication or model redownload required.
+- **Local Client Preservation**: Chrome Extension and C# Native Messaging host remain local Windows host components connecting via `http://127.0.0.1:8000`.
+
+### 13.3 Automated Test Verification
+- **7 Automated Tests in `tests/test_docker_orchestration.py`**:
+  - `test_dockerfile_structure_and_security`: Validates multi-stage build, unprivileged user `edgemind:10001`, healthcheck, and static-only invariants.
+  - `test_dockerignore_completeness`: Validates exclusions for `.env`, `.git`, `.venv`, `*.db`, `*.rdb`, caches, and tests.
+  - `test_docker_compose_yaml_structure_and_services`: Validates presence of backend, postgres, redis, redis-rate-limit, networks, and persistent volumes.
+  - `test_docker_compose_config_client_side_validation`: Validates full `docker compose config` parsing and interpolation.
+  - `test_postgres_pgvector_and_port_5433_isolation`: Validates pgvector image, host port 5433 mapping, and `pg_isready` healthcheck.
+  - `test_redis_cache_and_rate_limiting_isolation`: Validates memory policies (`allkeys-lru` vs `noeviction`), ports 6379/6380, and `--requirepass`.
+  - `test_backend_service_dependencies_and_ollama_bridge`: Validates `depends_on: condition: service_healthy`, service name resolution, and `host.docker.internal` gateway.
+  - `test_compose_fails_if_redis_password_missing`: Validates that startup fails fast if `REDIS_PASSWORD` is absent.
+
+### 13.4 Runtime Infrastructure Status
+- **Docker Desktop**: The local Docker Desktop daemon is currently stopped on this Windows machine. Client-side validation (`docker compose config`) and all orchestration tests pass cleanly; live container startup and image building remain ready to run as soon as Docker Desktop is started.

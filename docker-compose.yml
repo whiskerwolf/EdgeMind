@@ -1,11 +1,104 @@
-version: "3.8"
-
 services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-edgemind-backend:latest}
+    container_name: edgemind-backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    environment:
+      # Application Core Settings
+      APP_NAME: ${APP_NAME:-EdgeMind API}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      HOST: "0.0.0.0"
+      PORT: 8000
+      DEBUG: ${DEBUG:-false}
+      STATIC_ONLY: "true"
+
+      # Internal Docker Networking - PostgreSQL Database (Service name "postgres" on port 5432)
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-edgemind}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30.0}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+      DB_POOL_PRE_PING: ${DB_POOL_PRE_PING:-true}
+
+      # Internal Docker Networking - Redis Cache (Service name "redis" on port 6379)
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}@redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}
+      REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-20}
+      CACHE_ENABLED: ${CACHE_ENABLED:-true}
+      CACHE_DEFAULT_TTL: ${CACHE_DEFAULT_TTL:-3600}
+      CACHE_KEY_PREFIX: ${CACHE_KEY_PREFIX:-edgemind:cache:v1}
+
+      # Internal Docker Networking - Dedicated Rate Limiting Redis (Service name "redis-rate-limit" on port 6379)
+      REDIS_RATE_LIMIT_URL: redis://:${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD}}@redis-rate-limit:6379/0
+      REDIS_RATE_LIMIT_PASSWORD: ${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD}}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_FALLBACK_ALLOW: ${RATE_LIMIT_FALLBACK_ALLOW:-false}
+      RATE_LIMIT_DEFAULT_LIMIT: ${RATE_LIMIT_DEFAULT_LIMIT:-60}
+      RATE_LIMIT_DEFAULT_WINDOW: ${RATE_LIMIT_DEFAULT_WINDOW:-60}
+      RATE_LIMIT_AGENT_LIMIT: ${RATE_LIMIT_AGENT_LIMIT:-10}
+      RATE_LIMIT_AGENT_WINDOW: ${RATE_LIMIT_AGENT_WINDOW:-60}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-["127.0.0.1", "::1"]}
+
+      # Local Ollama AI Reasoning & RAG (Routes to Windows-hosted Ollama on port 11434)
+      EDGEMIND_AGENT_PROVIDER: ${EDGEMIND_AGENT_PROVIDER:-ollama}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      EDGEMIND_OLLAMA_BASE_URL: ${EDGEMIND_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-60.0}
+      RAG_EMBEDDING_PROVIDER: ${RAG_EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-all-minilm:latest}
+      OLLAMA_EMBEDDING_DIMENSIONS: ${OLLAMA_EMBEDDING_DIMENSIONS:-384}
+
+      # Optional Cloud AI Providers (Preserved for OpenAI compatibility)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      EDGEMIND_AI_KEY: ${EDGEMIND_AI_KEY:-}
+
+      # JWT Authentication & Multi-Tenancy
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      JWT_ISSUER: ${JWT_ISSUER:-edgemind-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-edgemind-client}
+
+      # Administrator Bootstrap
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+
+      # CORS Configuration
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"]}
+      CORS_ORIGIN_REGEX: ${CORS_ORIGIN_REGEX:-^chrome-extension://[a-p]{32}$$}
+    extra_hosts:
+      # Allows backend container to connect directly to host Windows Ollama service
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-rate-limit:
+        condition: service_healthy
+    networks:
+      - edgemind-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
   postgres:
     # Official version-pinned pgvector image for PostgreSQL 16 (Debian bookworm-slim based)
     # WARNING: This image uses Debian (glibc) rather than Alpine (musl libc).
-    # To prevent collation mismatch or cluster incompatibility with legacy postgres:16-alpine data,
-    # the original postgres_data volume is preserved intact and a dedicated volume is used.
+    # Dedicated volume postgres_pgvector_data is used to keep legacy postgres_data untouched.
     image: ${POSTGRES_IMAGE:-pgvector/pgvector:0.8.7-pg16}
     container_name: edgemind-postgres
     restart: unless-stopped
@@ -14,10 +107,13 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-edgemind}
     ports:
+      # Host port 5433 mapped to container 5432 (avoids conflict with nexus-postgres on 5432)
       - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
     volumes:
-      # Dedicated volume for Debian-based pgvector cluster; keeps legacy postgres_data untouched
+      # Dedicated volume for pgvector cluster; keeps legacy postgres_data untouched
       - ${POSTGRES_VOLUME:-postgres_pgvector_data}:/var/lib/postgresql/data
+    networks:
+      - edgemind-network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-edgemind}"]
       interval: 5s
@@ -40,9 +136,12 @@ services:
       --rename-command CONFIG ""
       --rename-command DEBUG ""
     ports:
+      # Bound to localhost for security
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - ${REDIS_VOLUME:-redis_data}:/data
+    networks:
+      - edgemind-network
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"]
       interval: 5s
@@ -65,9 +164,12 @@ services:
       --rename-command CONFIG ""
       --rename-command DEBUG ""
     ports:
+      # Dedicated port 6380 bound to localhost
       - "127.0.0.1:${REDIS_RATE_LIMIT_PORT:-6380}:6379"
     volumes:
       - ${REDIS_RATE_LIMIT_VOLUME:-redis_rate_limit_data}:/data
+    networks:
+      - edgemind-network
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a $${REDIS_RATE_LIMIT_PASSWORD:-$$REDIS_PASSWORD} --no-auth-warning ping"]
       interval: 5s
@@ -88,3 +190,7 @@ volumes:
   redis_rate_limit_data:
     driver: local
 
+networks:
+  edgemind-network:
+    name: edgemind-network
+    driver: bridge

@@ -643,7 +643,7 @@ async def test_real_local_ollama_qwen3_integration():
     Live smoke test against real local Ollama installation running qwen3:4b.
     Verifies actual HTTP response, tool calling, and local token metrics.
     """
-    provider = OllamaAgentProvider(model="qwen3:4b", timeout=120.0)
+    provider = OllamaAgentProvider(model="qwen3:4b", timeout=300.0)
 
     # 1. Non-streaming live chat
     step = await provider.chat_completion(

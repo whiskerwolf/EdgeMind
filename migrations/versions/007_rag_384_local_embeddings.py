@@ -30,8 +30,7 @@ def upgrade() -> None:
 
     has_pgvector = False
     if is_postgres:
-        conn = bind.connection
-        res = conn.execute(
+        res = bind.execute(
             sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
         ).scalar()
         if res:

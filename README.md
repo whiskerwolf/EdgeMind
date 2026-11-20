@@ -160,6 +160,105 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall_edgemind_native_mes
 
 ---
 
+## Docker Container Orchestration (Phase 6)
+
+EdgeMind provides a multi-container Docker Compose orchestration stack comprising:
+- **FastAPI Backend (`backend`)**: Multi-stage, unprivileged non-root (`edgemind:10001`) container serving the API on `127.0.0.1:8000`.
+- **PostgreSQL 16 with pgvector (`postgres`)**: Vector database on host port `5433` (mapped from container `5432` to avoid conflicts with `nexus-postgres` on port `5432`) with persistent volume `postgres_pgvector_data`.
+- **Dedicated Redis Cache (`redis`)**: Redis 7.2 (`redis:7.2.17-alpine3.21`) with `allkeys-lru` 256MB memory eviction on host port `6379`.
+- **Dedicated Redis Rate Limiter (`redis-rate-limit`)**: Memory-isolated Redis 7.2 with `noeviction` 64MB policy on host port `6380`.
+- **Local Ollama Integration**: Seamless bridge to Windows-hosted Ollama (`qwen3:4b` and `all-minilm:latest`) via `host.docker.internal:11434` (`extra_hosts`). Zero container duplication.
+- **Local Components**: The EdgeMind Chrome Extension and C# Native Messaging host run locally on the Windows host and connect to `http://127.0.0.1:8000`.
+
+### 1. Prerequisites & Environment Setup
+
+Copy `.env.example` to `.env` and configure your credentials:
+
+```powershell
+cp .env.example .env
+```
+
+Ensure `REDIS_PASSWORD` and `POSTGRES_PASSWORD` are configured. Never commit the `.env` file.
+
+### 2. Startup & Management Commands
+
+#### Validate Configuration
+```powershell
+docker compose config
+```
+
+#### Build the Backend Image
+```powershell
+docker compose build
+```
+
+#### Start All Services in Background
+```powershell
+docker compose up -d
+```
+
+#### Check Service Status & Health
+```powershell
+docker compose ps
+```
+
+All 4 services will report their state and health status (`healthy`).
+
+#### Follow Live Logs
+```powershell
+# All services
+docker compose logs -f
+
+# Backend only
+docker compose logs -f backend
+
+# Database only
+docker compose logs -f postgres
+```
+
+### 3. Database Migrations in Docker
+
+Run Alembic database migrations directly against the containerized PostgreSQL database:
+
+```powershell
+docker compose exec backend alembic upgrade head
+```
+
+To rollback the last migration:
+```powershell
+docker compose exec backend alembic downgrade -1
+```
+
+### 4. Health Checks & Verification
+
+Each service includes explicit Docker health checks:
+* **Backend**: `curl -f http://127.0.0.1:8000/health` (10s interval, 3 retries)
+* **PostgreSQL**: `pg_isready -U postgres -d edgemind` (5s interval, 5 retries)
+* **Redis Cache**: `redis-cli -a $REDIS_PASSWORD --no-auth-warning ping` (5s interval, 5 retries)
+* **Redis Rate Limiter**: `redis-cli -a $REDIS_RATE_LIMIT_PASSWORD --no-auth-warning ping` (5s interval, 5 retries)
+
+Service dependencies in `docker-compose.yml` enforce `condition: service_healthy`, ensuring the backend only starts after PostgreSQL and both Redis instances are fully operational.
+
+### 5. Shutdown & Maintenance
+
+#### Graceful Stop (Preserves Data Volumes)
+```powershell
+docker compose down
+```
+
+#### Stop and Remove Volumes (Warning: Wipes Data)
+```powershell
+docker compose down -v
+```
+
+### 6. Troubleshooting & Operational Notes
+
+* **Port 5432 vs 5433 Conflict**: Port `5432` is reserved for existing local databases (such as `nexus-postgres`). EdgeMind maps PostgreSQL to host port `5433`. If you run migrations or tests from the Windows host outside Docker, set `DATABASE_URL=postgresql+asyncpg://postgres:<password>@localhost:5433/edgemind`. Inside Docker containers, services communicate via the internal network (`postgres:5432`).
+* **Redis Password Requirement**: Both Redis instances enforce `--requirepass`. If startup fails with `REDIS_PASSWORD must be explicitly configured`, ensure `REDIS_PASSWORD` is set in `.env`.
+* **Connecting to Windows Ollama**: The backend connects to the host machine's Ollama instance at `http://host.docker.internal:11434`. Ensure Ollama is running on Windows (`ollama list`). If Docker Desktop cannot resolve `host.docker.internal`, verify that the `extra_hosts: ["host.docker.internal:host-gateway"]` entry is present in `docker-compose.yml`.
+
+---
+
 ## HTTP API Documentation
 
 ### 1. Health Check

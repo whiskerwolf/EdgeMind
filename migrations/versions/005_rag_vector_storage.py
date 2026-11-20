@@ -35,8 +35,7 @@ def upgrade() -> None:
     # 0. Check and enable pgvector extension if PostgreSQL is active and extension is available
     has_pgvector = False
     if is_postgres:
-        conn = bind.connection
-        res = conn.execute(
+        res = bind.execute(
             sa.text("SELECT 1 FROM pg_available_extensions WHERE name = 'vector'")
         ).scalar()
         if res:
