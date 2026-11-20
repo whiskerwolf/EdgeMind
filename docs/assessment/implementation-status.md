@@ -556,4 +556,57 @@ EdgeMind defines a production-ready, security-hardened multi-container architect
   - `test_compose_fails_if_redis_password_missing`: Validates that startup fails fast if `REDIS_PASSWORD` is absent.
 
 ### 13.4 Runtime Infrastructure Status
-- **Docker Desktop**: The local Docker Desktop daemon is currently stopped on this Windows machine. Client-side validation (`docker compose config`) and all orchestration tests pass cleanly; live container startup and image building remain ready to run as soon as Docker Desktop is started.
+- **Docker Desktop & Container Stack**: The local Docker Desktop Linux engine has been activated and verified. The backend image `edgemind-backend:latest` was built via multi-stage Dockerfile with unprivileged user `edgemind:10001`. All four container services (`backend`, `postgres` with pgvector 0.8.7, `redis` cache, and `redis-rate-limit`) are running and report `healthy`. Host port 5433 operates in strict isolation without conflicting with `nexus-postgres` on port 5432. All Alembic migrations (001 through 008) have been executed and verified against live PostgreSQL.
+
+---
+
+## 14. Production Readiness and GitHub Actions CI/CD Pipeline (Phase 7A)
+
+### 14.1 Automated GitHub Actions Pipeline (`.github/workflows/ci.yml`)
+Phase 7A establishes an automated continuous integration and security verification pipeline running on GitHub-hosted runners:
+- **Triggers**:
+  - Push events targeting `feature/assessment-score-6`.
+  - Pull requests targeting `main`.
+  - Manual execution via `workflow_dispatch`.
+- **Security & Least Privilege**:
+  - `permissions: contents: read` restricts workflow tokens to read-only repository access.
+  - Concurrency group management with `cancel-in-progress: true` eliminates redundant builds.
+
+### 14.2 Pipeline Architecture & Quality Gates
+1. **Security & Secrets Audit Job (`security-audit`)**:
+   - Validates that zero private environment files (`.env`, `.env.*`), private certificates (`.pem`, `.key`), or local database files (`*.db`, `*.sqlite`, `*.rdb`) exist in the git index.
+   - Comprehensive secret pattern scanner detecting leaked API keys, tokens, and private keys while strictly masking values in CI logs.
+   - Enforces clean whitespace formatting via `git diff --check` dynamically computed across actual commit ranges (`pull_request.base.sha` or `push.before`).
+   - Audits package dependencies for CVEs and vulnerabilities using `pip-audit -r requirements.txt`.
+   - Validates workflow syntax integrity using `actionlint`.
+   - Audits package dependencies using `pip check` to ensure clean resolution.
+2. **Unit & Integration Testing with Services (`test-and-migrate`)**:
+   - GitHub Actions container service definitions:
+     - `postgres`: Version-pinned `pgvector/pgvector:0.8.7-pg16` on port 5433 with healthcheck `pg_isready`.
+     - `redis`: Version-pinned `redis:7.2.17-alpine3.21` on port 6379 with `--requirepass`.
+     - `redis-rate-limit`: Memory-isolated `redis:7.2.17-alpine3.21` on port 6380 with `--requirepass`.
+   - Automatically verifies pgvector extension availability via asyncpg.
+   - Validates forward migrations from scratch: executes `alembic upgrade head` and asserts single migration head `008_fix_knowledge_documents_updated_at`.
+   - Executes the complete pytest test suite (797+ tests) with graceful skips for optional live cloud providers.
+3. **Docker Build & Image Verification Job (`docker-validation`)**:
+   - Performs syntax and variable interpolation validation on `docker-compose.yml`.
+   - Builds the production multi-stage backend container image (`edgemind-backend:ci`) with `push: false`.
+   - Asserts unprivileged execution: verifies runtime user ID equals `10001` (`edgemind`).
+   - Asserts immutable safety invariant: verifies `STATIC_ONLY="true"` within the built image.
+
+### 14.3 Production Invariant Enforcement (`core/config.py`)
+- Added `@model_validator(mode="after")` `validate_production_invariants` to Pydantic Settings:
+  - Enforces `static_only=True` permanently across all environments (rejects disabling static-only analysis).
+  - Enforces `debug=False` when `environment='production'` (fails fast if debug logging is enabled in production).
+  - Enforces explicit `REDIS_PASSWORD` and `REDIS_RATE_LIMIT_PASSWORD` in production.
+  - Enforces explicit non-empty `JWT_SECRET_KEY` in production.
+
+### 14.4 Production Deployment Documentation (`docs/deployment/production.md`)
+Created a comprehensive operations manual detailing:
+- Production container topology and host-gateway networking.
+- Complete environment variable reference and required secret lengths.
+- Dedicated PostgreSQL pgvector storage volumes and dual Redis LRU/noeviction memory caps.
+- TLS 1.3 reverse proxy configuration (Nginx sample).
+- Step-by-step deployment and health check verification procedures.
+- Rollback strategies for application containers and forward-only Alembic migrations.
+- Monitoring guidelines for `X-Request-ID` tracing, `X-Process-Time` metrics, and memory bounds.

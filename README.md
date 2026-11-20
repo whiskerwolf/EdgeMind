@@ -257,6 +257,13 @@ docker compose down -v
 * **Redis Password Requirement**: Both Redis instances enforce `--requirepass`. If startup fails with `REDIS_PASSWORD must be explicitly configured`, ensure `REDIS_PASSWORD` is set in `.env`.
 * **Connecting to Windows Ollama**: The backend connects to the host machine's Ollama instance at `http://host.docker.internal:11434`. Ensure Ollama is running on Windows (`ollama list`). If Docker Desktop cannot resolve `host.docker.internal`, verify that the `extra_hosts: ["host.docker.internal:host-gateway"]` entry is present in `docker-compose.yml`.
 
+### 7. Production Deployment Guide & CI/CD Pipeline (Phase 7A)
+
+For enterprise production architecture, HTTPS reverse proxy termination, zero-downtime deployment, secrets management, automated database migrations, and GitHub Actions CI/CD workflows, refer to:
+* **Production Operations Guide**: [docs/deployment/production.md](docs/deployment/production.md)
+* **GitHub Actions CI/CD Workflow**: [.github/workflows/ci.yml](.github/workflows/ci.yml)
+
+
 ---
 
 ## HTTP API Documentation

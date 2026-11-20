@@ -12,7 +12,7 @@ from functools import lru_cache
 import os
 import re
 from typing import List, Optional
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -216,6 +216,19 @@ class Settings(BaseSettings):
             and self.redis_rate_limit_url.strip()
             and self.redis_rate_limit_url.strip() != (self.redis_url or "").strip()
         )
+
+    @model_validator(mode="after")
+    def validate_production_invariants(self) -> "Settings":
+        """
+        Enforce production safety invariants:
+        - static_only is permanently True (arbitrary code execution prohibited).
+        - debug must be False when environment == 'production'.
+        """
+        if not self.static_only:
+            raise ValueError("static_only must remain True. Arbitrary code execution is permanently disabled.")
+        if self.environment.lower() == "production" and self.debug:
+            raise ValueError("DEBUG must be False in production environment.")
+        return self
 
     def validate_redis_security(self) -> None:
         """

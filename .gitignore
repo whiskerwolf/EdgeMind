@@ -33,6 +33,12 @@ htmlcov/
 .env.*
 !.env.example
 
+# Database & cache files
+*.db
+*.sqlite
+*.sqlite3
+*.rdb
+
 # EdgeMind logs and process files
 logs/
 *.pid

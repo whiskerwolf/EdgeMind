@@ -1,0 +1,246 @@
+name: EdgeMind CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - feature/assessment-score-6
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security-audit:
+    name: Security & Secret Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify excluded files & secrets hygiene
+        run: |
+          echo "Verifying no private environment files, keys, or local databases are tracked..."
+          if git ls-files | grep -E '(\.env$|\.env\.|\.pem$|\.key$|\.p12$|\.pkcs12$|\.db$|\.sqlite[0-9]*$|\.rdb$)'; then
+            echo "ERROR: Forbidden secret or database file found in git index!"
+            exit 1
+          fi
+          echo "File exclusion check passed."
+
+          echo "Scanning tracked codebase for leaked credential patterns (redacted output)..."
+          LEAKS_DETECTED=0
+          PATTERNS=(
+            'sk-[a-zA-Z0-9]{20,}'
+            'sk-proj-[a-zA-Z0-9_-]{20,}'
+            'ghp_[a-zA-Z0-9]{36}'
+            'gho_[a-zA-Z0-9]{36}'
+            'github_pat_[a-zA-Z0-9_]{22,}'
+            'AKIA[0-9A-Z]{16}'
+            '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+            'xox[baprs]-[0-9a-zA-Z]{10,}'
+          )
+
+          while IFS= read -r file; do
+            for pattern in "${PATTERNS[@]}"; do
+              if grep -E -q "$pattern" "$file" 2>/dev/null; then
+                LINE_NUM=$(grep -E -n "$pattern" "$file" 2>/dev/null | cut -d: -f1 | head -n 1)
+                echo "::error file=$file,line=$LINE_NUM::Credential pattern match detected in $file at line $LINE_NUM (value redacted)."
+                LEAKS_DETECTED=$((LEAKS_DETECTED + 1))
+              fi
+            done
+          done < <(git ls-files | grep -v -E '(\.example$|\.sample$|^tests/)')
+
+          if [ "$LEAKS_DETECTED" -gt 0 ]; then
+            echo "ERROR: $LEAKS_DETECTED leaked credential pattern(s) detected in tracked code."
+            exit 1
+          fi
+          echo "Secret scanning passed. No leaked credentials detected."
+
+      - name: Check git formatting and whitespace on event commits
+        run: |
+          echo "Determining diff range for event: ${{ github.event_name }}..."
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+            echo "Checking git whitespace for pull request against base commit: $BASE_REF"
+            git diff --check "$BASE_REF" HEAD
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            echo "Checking git whitespace for push against before commit: ${{ github.event.before }}"
+            git diff --check "${{ github.event.before }}" HEAD
+          elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            echo "Checking git whitespace for commit against HEAD~1"
+            git diff --check HEAD~1 HEAD
+          else
+            echo "Initial commit or shallow tree; checking HEAD commit diff"
+            git show --check
+          fi
+          echo "Git whitespace check passed."
+
+      - name: Dependency vulnerability scan with pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          echo "Scanning requirements.txt and requirements-dev.txt with pip-audit..."
+          pip-audit -r requirements.txt -r requirements-dev.txt
+          echo "pip-audit completed successfully. No known vulnerabilities found."
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip check
+
+      - name: Validate workflow syntax with actionlint
+        run: |
+          pip install actionlint-py
+          actionlint .github/workflows/ci.yml
+          echo "actionlint workflow syntax validation passed."
+
+  test-and-migrate:
+    name: Unit & Integration Tests (PostgreSQL pgvector & Redis)
+    runs-on: ubuntu-latest
+    needs: security-audit
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_ci_password_123
+          POSTGRES_DB: edgemind
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d edgemind"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7.2.17-alpine3.21
+        ports:
+          - 6379:6379
+        options: >-
+          redis-server --requirepass redis_ci_password_123
+          --health-cmd "redis-cli -a redis_ci_password_123 ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+      redis-rate-limit:
+        image: redis:7.2.17-alpine3.21
+        ports:
+          - 6380:6379
+        options: >-
+          redis-server --requirepass redis_ci_password_123
+          --health-cmd "redis-cli -a redis_ci_password_123 ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres_ci_password_123@127.0.0.1:5433/edgemind
+      TEST_POSTGRES_URL: postgresql+asyncpg://postgres:postgres_ci_password_123@127.0.0.1:5433/edgemind
+      REDIS_URL: redis://:redis_ci_password_123@127.0.0.1:6379/0
+      REDIS_PASSWORD: redis_ci_password_123
+      REDIS_RATE_LIMIT_URL: redis://:redis_ci_password_123@127.0.0.1:6380/0
+      REDIS_RATE_LIMIT_PASSWORD: redis_ci_password_123
+      JWT_SECRET_KEY: test_jwt_secret_key_ci_environment_32chars
+      STATIC_ONLY: "true"
+      ENVIRONMENT: testing
+      DEBUG: "false"
+      EDGEMIND_RUN_LIVE_PROVIDER_TESTS: "false"
+      EDGEMIND_RUN_LOCAL_OLLAMA_TESTS: "false"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Verify PostgreSQL pgvector extension
+        run: |
+          python -c "
+          import asyncio
+          import asyncpg
+
+          async def check():
+              conn = await asyncpg.connect('postgresql://postgres:postgres_ci_password_123@127.0.0.1:5433/edgemind')
+              res = await conn.fetchval(\"SELECT default_version FROM pg_available_extensions WHERE name = 'vector'\")
+              print(f'pgvector extension available in CI container: {res}')
+              await conn.close()
+              assert res is not None, 'pgvector extension missing!'
+
+          asyncio.run(check())
+          "
+
+      - name: Run Alembic migrations to head
+        run: |
+          alembic upgrade head
+          alembic current
+          alembic heads
+
+      - name: Execute pytest test suite
+        run: |
+          pytest -v --tb=short
+
+  docker-validation:
+    name: Docker Image & Compose Validation
+    runs-on: ubuntu-latest
+    needs: security-audit
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Validate docker-compose.yml configuration
+        run: |
+          REDIS_PASSWORD="ci_redis_secure_password_test" docker compose config -q
+          echo "docker-compose.yml syntax and variable interpolation valid."
+
+      - name: Build Backend Production Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: edgemind-backend:ci
+          load: true
+
+      - name: Verify built container metadata and security invariants
+        run: |
+          # 1. Verify unprivileged user (UID 10001)
+          USER_ID=$(docker run --rm edgemind-backend:ci id -u)
+          echo "Container running user ID: $USER_ID"
+          if [ "$USER_ID" != "10001" ]; then
+            echo "ERROR: Container is not running as unprivileged user 10001!"
+            exit 1
+          fi
+
+          # 2. Verify STATIC_ONLY immutable safety invariant
+          STATIC_VAL=$(docker run --rm edgemind-backend:ci python -c "from core.config import get_settings; print(get_settings().static_only)")
+          echo "Container STATIC_ONLY setting: $STATIC_VAL"
+          if [ "$STATIC_VAL" != "True" ]; then
+            echo "ERROR: STATIC_ONLY invariant must be True!"
+            exit 1
+          fi
+
+          echo "Container security and invariant validation passed."
