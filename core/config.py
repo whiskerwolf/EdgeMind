@@ -64,6 +64,16 @@ class Settings(BaseSettings):
         default=r"^chrome-extension://[a-p]{32}$",
         description="Allowed origin regex matching unpacked and packaged Chrome extensions",
     )
+    edgemind_chrome_extension_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "edgemind_chrome_extension_id",
+            "chrome_extension_id",
+            "EDGEMIND_CHROME_EXTENSION_ID",
+            "CHROME_EXTENSION_ID",
+        ),
+        description="Exact 32-character lowercase [a-p] Chrome extension ID permitted in production",
+    )
     cors_allow_credentials: bool = Field(default=True, description="Allow HTTP credentials in CORS")
     cors_allow_methods: List[str] = Field(default_factory=lambda: ["*"], description="Allowed HTTP methods")
     cors_allow_headers: List[str] = Field(default_factory=lambda: ["*"], description="Allowed HTTP request headers")
@@ -223,11 +233,25 @@ class Settings(BaseSettings):
         Enforce production safety invariants:
         - static_only is permanently True (arbitrary code execution prohibited).
         - debug must be False when environment == 'production'.
+        - edgemind_chrome_extension_id validation and CORS restriction in production.
         """
         if not self.static_only:
             raise ValueError("static_only must remain True. Arbitrary code execution is permanently disabled.")
         if self.environment.lower() == "production" and self.debug:
             raise ValueError("DEBUG must be False in production environment.")
+
+        # Exact Chrome Extension ID enforcement
+        if self.edgemind_chrome_extension_id and self.edgemind_chrome_extension_id.strip():
+            ext_id = self.edgemind_chrome_extension_id.strip()
+            if not re.match(r"^[a-p]{32}$", ext_id):
+                raise ValueError(
+                    f"Invalid EDGEMIND_CHROME_EXTENSION_ID '{ext_id}': must be exactly 32 lowercase chars [a-p]"
+                )
+            self.cors_origin_regex = rf"^chrome-extension://{re.escape(ext_id)}$"
+        elif self.environment.lower() == "production":
+            # In production without an explicit extension ID, eliminate the unrestricted wildcard regex
+            self.cors_origin_regex = None
+
         return self
 
     def validate_redis_security(self) -> None:

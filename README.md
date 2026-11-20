@@ -263,6 +263,14 @@ For enterprise production architecture, HTTPS reverse proxy termination, zero-do
 * **Production Operations Guide**: [docs/deployment/production.md](docs/deployment/production.md)
 * **GitHub Actions CI/CD Workflow**: [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
+### 8. Oracle Cloud Infrastructure (OCI) Always Free ARM64 Deployment (Phase 7B & 7C)
+
+For production deployment targeting an Oracle Cloud Infrastructure Always Free ARM64 VM (`VM.Standard.A1.Flex`, 2 OCPUs, 12 GB RAM) with Caddy automatic TLS, containerized Ollama AI inference, PostgreSQL pgvector, and automated backup rotation, refer to:
+* **OCI Deployment Guide & Automation**: [deploy/oci/README.md](deploy/oci/README.md)
+* **Terraform Always Free Infrastructure**: [deploy/oci/terraform/](deploy/oci/terraform/)
+* **Production Docker Compose Stack**: [deploy/oci/docker-compose.production.yml](deploy/oci/docker-compose.production.yml)
+* **Manual GitHub Actions Deploy Workflow**: [.github/workflows/deploy-oci.yml](.github/workflows/deploy-oci.yml)
+
 
 ---
 

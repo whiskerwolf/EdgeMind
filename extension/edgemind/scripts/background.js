@@ -12,7 +12,14 @@
   "use strict";
 
   const NATIVE_HOST_NAME = "com.edgemind.native_host";
-  const API_HEALTH_URL = "http://127.0.0.1:8000/health";
+  let API_HEALTH_URL = "http://127.0.0.1:8000/health";
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(["edgemind_api_url"], (res) => {
+      if (res && res.edgemind_api_url) {
+        API_HEALTH_URL = `${res.edgemind_api_url.replace(/\/+$/, "")}/health`;
+      }
+    });
+  }
   const HEALTH_TIMEOUT_MS = 2000;
 
   let isStartupInProgress = false;

@@ -610,3 +610,41 @@ Created a comprehensive operations manual detailing:
 - Step-by-step deployment and health check verification procedures.
 - Rollback strategies for application containers and forward-only Alembic migrations.
 - Monitoring guidelines for `X-Request-ID` tracing, `X-Process-Time` metrics, and memory bounds.
+
+---
+
+## 15. Production Deployment on Oracle Cloud Infrastructure (OCI) Always Free ARM64 (Phase 7B & 7C)
+
+### 15.1 Architecture Audit & Remote AI Realignment
+- **Chrome Extension & Native Messaging Host**: Chrome extension connects securely via HTTPS to the Caddy reverse proxy endpoint (`https://edgemind.example.com` or `https://<OCI_PUBLIC_IP>`) with CORS origin filtering. The C# Native Messaging host remains local to client machines.
+- **Remote Ollama Containerization**: In production, `host.docker.internal` is eliminated. Ollama runs as an internal container service (`ollama:11434`) on private network `edgemind-prod-net`.
+- **CPU Inference Concurrency**: The OCI Ampere A1 VM lacks discrete GPU hardware; Ollama concurrency is locked to `OLLAMA_NUM_PARALLEL=1`, `OLLAMA_MAX_LOADED_MODELS=2`, and `OLLAMA_KEEP_ALIVE=24h` to prevent thrashing and guarantee deterministic memory bounds.
+- **Service Topology**: 6 orchestrated containers (`caddy`, `backend`, `postgres`, `redis`, `redis-rate-limit`, `ollama`) with public ports restricted to 80 (HTTP) and 443 (HTTPS). Internal services (PostgreSQL 5432, Redis 6379, Redis Rate Limit 6380, Backend 8000, Ollama 11434) expose zero host ports.
+
+### 15.2 OCI Always Free ARM64 Compatibility
+- **Target Specifications**: `VM.Standard.A1.Flex`, 2 OCPUs, 12 GB RAM, 100 GB Boot Volume (well within the Always Free ceiling of 4 OCPUs, 24 GB RAM, and 200 GB volume).
+- **Multi-Arch ARM64 Native Images**:
+  - `python:3.12-slim`: Official multi-arch Debian Bookworm image natively supporting `linux/arm64`.
+  - `pgvector/pgvector:0.8.7-pg16`: Multi-arch Debian glibc image.
+  - `redis:7.2.17-alpine3.21`: Multi-arch Alpine LTS image.
+  - `ollama/ollama:0.5.7`: Multi-arch Linux image with ARM NEON / vector acceleration.
+  - `caddy:2.9.1-alpine`: Multi-arch Alpine image.
+- **Deterministic Memory Allocation (12 GB RAM)**:
+  - `ollama`: 6.0 GB limit (3.0 GB reservation)
+  - `backend`: 1.5 GB limit (512 MB reservation)
+  - `postgres`: 1.5 GB limit (512 MB reservation)
+  - `redis` (cache): 384 MB limit (128 MB reservation, `allkeys-lru`)
+  - `redis-rate-limit`: 256 MB limit (64 MB reservation, `noeviction`)
+  - `caddy`: 256 MB limit (64 MB reservation)
+  - Total container ceiling: ~9.9 GB, preserving >= 2.1 GB buffer for host kernel and OS caches.
+
+### 15.3 Deployment Automation & Infrastructure as Code (`deploy/oci/`)
+- **Terraform (`deploy/oci/terraform/`)**: Automated HCL2 provisioning defining VCN (`10.0.0.0/16`), regional public subnet (`10.0.1.0/24`), Internet Gateway, Route Table, Ingress Security Rules (ports 22, 80, 443 only), and `VM.Standard.A1.Flex` instance.
+- **Cloud-Init (`deploy/oci/cloud-init.yaml`)**: Automated host bootstrap installing Docker CE and compose plugin on Ubuntu 24.04 aarch64, configuring Redis sysctl (`vm.overcommit_memory=1`, `net.core.somaxconn=1024`), UFW host firewall, and application directories.
+- **Caddy Reverse Proxy (`deploy/oci/Caddyfile`)**: Automatic TLS via Let's Encrypt / ZeroSSL, 10MB request body size limits, compression, and security headers (HSTS, nosniff, DENY frame options).
+- **Automated Backup & Safe Restoration (`deploy/oci/scripts/`)**:
+  - `backup-postgres.sh`: Compressed pg_dump (`edgemind_postgres_YYYYMMDD_HHMMSS.sql.gz`) with 7-day retention rotation.
+  - `restore-postgres.sh`: Gzip integrity verification, confirmation gate (`--confirm`), and post-restoration migration alignment (`alembic upgrade head`).
+  - `deploy.sh`: End-to-end zero-downtime deployment, migration execution through revision 008, Ollama model preloading (`qwen3:4b`, `all-minilm:latest`), and health check polling.
+  - `setup-firewall.sh`: Standalone host firewall hardening.
+- **GitHub Actions Deployment Pipeline (`.github/workflows/deploy-oci.yml`)**: Manual `workflow_dispatch` trigger, least-privilege `permissions: contents: read`, zero secret logging, and remote execution via SSH.

@@ -1,0 +1,68 @@
+#cloud-config
+# EdgeMind Production VM Initialization for OCI Always Free ARM64 (Ampere A1)
+# OS: Ubuntu 24.04 LTS aarch64
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - git
+  - ufw
+  - jq
+  - htop
+
+write_files:
+  # 1. Sysctl tuning for Redis and high performance networking
+  - path: /etc/sysctl.d/99-edgemind.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      # Enable memory overcommit for Redis background saves (BGSAVE)
+      vm.overcommit_memory = 1
+      # Increase socket listen backlog
+      net.core.somaxconn = 1024
+      # TCP keepalive tuning
+      net.ipv4.tcp_keepalive_time = 300
+      net.ipv4.tcp_keepalive_intvl = 60
+      net.ipv4.tcp_keepalive_probes = 5
+
+runcmd:
+  # Apply sysctl settings immediately
+  - sysctl -p /etc/sysctl.d/99-edgemind.conf
+
+  # Install official Docker CE repository for ARM64
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  - chmod a+r /etc/apt/keyrings/docker.asc
+  - echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update -y
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # Enable and start Docker service
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Add default ubuntu user to docker group
+  - usermod -aG docker ubuntu
+
+  # Configure UFW Host Firewall (Allow only SSH 22, HTTP 80, HTTPS 443)
+  - ufw --force reset
+  - ufw default deny incoming
+  - ufw default allow outgoing
+  - ufw allow 22/tcp comment 'SSH restricted administration'
+  - ufw allow 80/tcp comment 'Caddy HTTP ACME challenge and redirect'
+  - ufw allow 443/tcp comment 'Caddy HTTPS EdgeMind API'
+  - ufw --force enable
+
+  # Prepare EdgeMind application directories
+  - mkdir -p /opt/edgemind/deploy/oci/scripts
+  - mkdir -p /opt/edgemind/backups
+  - chown -R ubuntu:ubuntu /opt/edgemind
+  - chmod 700 /opt/edgemind/backups
+
+final_message: "EdgeMind OCI Always Free ARM64 cloud-init initialization completed successfully after $UPTIME seconds."

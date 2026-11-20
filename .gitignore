@@ -32,6 +32,32 @@ htmlcov/
 .env
 .env.*
 !.env.example
+!.env*.example
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Private SSH/API keys & certs
+*.pem
+*.key
+id_rsa
+id_ed25519
+
+# Backups & dumps
+*.sql
+*.sql.gz
+*.dump
+*.tar.gz
 
 # Database & cache files
 *.db

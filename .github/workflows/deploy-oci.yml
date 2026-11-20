@@ -1,0 +1,97 @@
+name: EdgeMind OCI Production Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target deployment environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+      dry_run:
+        description: "Perform connectivity and configuration validation without altering containers"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-oci-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-oci:
+    name: Deploy to OCI ARM64 VM
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH client and validate deployment secrets
+        run: |
+          echo "Validating required GitHub deployment secrets..."
+          if [ -z "${{ secrets.OCI_HOST }}" ]; then
+            echo "ERROR: GitHub secret 'OCI_HOST' is not configured!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.OCI_SSH_USER }}" ]; then
+            echo "ERROR: GitHub secret 'OCI_SSH_USER' is not configured!"
+            exit 1
+          fi
+          if [ -z "${{ secrets.OCI_SSH_KEY }}" ]; then
+            echo "ERROR: GitHub secret 'OCI_SSH_KEY' is not configured!"
+            exit 1
+          fi
+
+          # Setup SSH directory
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          # Store private key with strict permissions
+          echo "${{ secrets.OCI_SSH_KEY }}" > ~/.ssh/id_edgemind_deploy
+          chmod 600 ~/.ssh/id_edgemind_deploy
+
+          # Disable host key prompts securely via strict host key checking accept-new
+          echo "StrictHostKeyChecking accept-new" >> ~/.ssh/config
+
+      - name: Verify SSH connectivity to OCI host
+        run: |
+          echo "Testing secure SSH connection to remote host..."
+          ssh -i ~/.ssh/id_edgemind_deploy -o ConnectTimeout=15 \
+            ${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }} \
+            "uname -m && uptime"
+
+      - name: Execute deployment on remote OCI host
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "Executing remote production deployment on OCI host..."
+          ssh -i ~/.ssh/id_edgemind_deploy \
+            ${{ secrets.OCI_SSH_USER }}@${{ secrets.OCI_HOST }} \
+            "cd /opt/edgemind/deploy/oci && ./scripts/deploy.sh"
+
+      - name: Verify remote API health endpoint
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "Verifying EdgeMind production health status..."
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" https://${{ secrets.OCI_HOST }}/health || true)
+          if [ "$STATUS_CODE" != "200" ]; then
+            # Fallback to HTTP if TLS certificate is still provisioning
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://${{ secrets.OCI_HOST }}/health || true)
+          fi
+          echo "Endpoint response status code: $STATUS_CODE"
+          if [ "$STATUS_CODE" != "200" ]; then
+            echo "ERROR: Remote health endpoint did not return 200 OK!"
+            exit 1
+          fi
+          echo "Remote deployment verified successfully."
+
+      - name: Cleanup SSH private key
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_edgemind_deploy

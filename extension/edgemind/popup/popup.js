@@ -12,8 +12,15 @@
 (() => {
   "use strict";
 
-  // Configuration constants
-  const API_BASE_URL = "http://127.0.0.1:8000";
+  // Configuration constants (defaults to localhost; supports production override via storage)
+  let API_BASE_URL = "http://127.0.0.1:8000";
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(["edgemind_api_url"], (res) => {
+      if (res && res.edgemind_api_url) {
+        API_BASE_URL = res.edgemind_api_url.replace(/\/+$/, "");
+      }
+    });
+  }
   const MAX_SOURCE_SIZE = 64 * 1024; // 64 KiB
   const REQUEST_TIMEOUT_MS = 10000;
 

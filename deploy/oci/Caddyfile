@@ -1,0 +1,54 @@
+# EdgeMind Production Caddyfile
+# Handles automatic TLS termination, reverse proxy to backend, security headers, and compression.
+
+{
+    # Global options
+    admin off
+    auto_https disable_redirects # Allow Caddy to serve both HTTP and HTTPS if configured, or auto HTTPS
+    servers {
+        trusted_proxies static private_ranges
+    }
+}
+
+# Production Endpoint Definition
+# If DOMAIN_NAME is set (e.g. edgemind.example.com), Caddy provisions Let's Encrypt TLS automatically.
+# Otherwise, it falls back to serving HTTPS with an internal self-signed certificate on port 443 and HTTP on 80.
+{$DOMAIN_NAME::80, :443} {
+    # Request body size limit (prevents DoS via payload bloating)
+    request_body {
+        max_size 10MB
+    }
+
+    # Compression for text, JSON, and streaming responses
+    encode zstd gzip
+
+    # Production Security Response Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    # Reverse Proxy to FastAPI Backend container on private internal Docker network
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Health check configuration for upstream backend
+        health_uri /health
+        health_interval 10s
+        health_timeout 3s
+    }
+
+    # Access and Error Logging
+    log {
+        output stdout
+        format json
+        level INFO
+    }
+}

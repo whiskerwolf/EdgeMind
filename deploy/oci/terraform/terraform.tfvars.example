@@ -1,0 +1,28 @@
+# Example Terraform variables for EdgeMind OCI Always Free deployment.
+# Copy this file to terraform.tfvars and fill in your tenancy credentials.
+# NEVER commit your actual terraform.tfvars or API private keys to Git.
+
+tenancy_ocid     = "ocid1.tenancy.oc1..aaaaaaaasampletenancyocidexample"
+user_ocid        = "ocid1.user.oc1..aaaaaaaasampleuserocidexample"
+fingerprint      = "xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx:xx"
+private_key_path = "~/.oci/oci_api_key.pem"
+region           = "us-ashburn-1"
+compartment_ocid = "ocid1.compartment.oc1..aaaaaaaasamplecompartmentocidexample"
+
+# Availability domain index (1, 2, or 3)
+availability_domain_number = 1
+
+# OCI Always Free ARM64 compute specifications
+instance_shape          = "VM.Standard.A1.Flex"
+ocpus                   = 2
+memory_in_gbs           = 12
+boot_volume_size_in_gbs = 100
+
+# Administrator SSH public key string (e.g. content of ~/.ssh/id_rsa.pub or id_ed25519.pub)
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyPlaceholder edgemind-admin"
+
+# Restricted CIDR for SSH access (e.g. your home/office IP: 203.0.113.45/32)
+admin_ip_cidr = "0.0.0.0/0"
+
+# Optional domain name pointing to the instance public IP for Caddy automatic TLS
+domain_name = ""

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Chrome Extension Packaging Tool for EdgeMind.
 
@@ -66,10 +66,47 @@ def validate_manifest(ext_dir: str) -> dict:
     return manifest
 
 
-def package_extension() -> dict:
+def generate_manifest(base_manifest: dict, mode: str = "development", api_domain: str | None = None) -> dict:
+    """
+    Generate manifest dictionary configured for development or production.
+    - development: Uses localhost host_permissions (127.0.0.1 and localhost on port 8000).
+    - production: Requires exact api_domain (e.g. 'edgemind.example.com') and sets host_permissions
+      strictly to [f"https://{api_domain}/*"], rejecting broad wildcards.
+    """
+    manifest = json.loads(json.dumps(base_manifest))
+    if mode == "development":
+        manifest["host_permissions"] = [
+            "http://127.0.0.1:8000/*",
+            "http://localhost:8000/*",
+        ]
+    elif mode == "production":
+        domain = api_domain or os.environ.get("EDGEMIND_PRODUCTION_API_DOMAIN")
+        if not domain or not domain.strip():
+            # If not specified, default to production domain placeholder or keep existing
+            domain = "api.edgemind.internal"
+        clean_domain = domain.strip().lower()
+        if clean_domain.startswith("https://"):
+            clean_domain = clean_domain[len("https://"):]
+        elif clean_domain.startswith("http://"):
+            clean_domain = clean_domain[len("http://"):]
+        clean_domain = clean_domain.split("/")[0].strip()
+
+        # Reject broad wildcards
+        if clean_domain in {"*", "*.*", ""}:
+            raise ValueError(f"Broad or invalid domain wildcard prohibited in production: {domain}")
+
+        manifest["host_permissions"] = [f"https://{clean_domain}/*"]
+    else:
+        raise ValueError(f"Unknown manifest mode '{mode}'. Expected 'development' or 'production'")
+
+    return manifest
+
+
+def package_extension(api_domain: str | None = None, mode: str = "production") -> dict:
     """Package the Chrome extension into dist/edgemind-chrome-web-store.zip."""
     os.makedirs(DIST_DIR, exist_ok=True)
-    manifest = validate_manifest(EXT_DIR)
+    base_manifest = validate_manifest(EXT_DIR)
+    manifest = generate_manifest(base_manifest, mode=mode, api_domain=api_domain)
 
     included_files = []
     total_uncompressed_bytes = 0
@@ -78,12 +115,20 @@ def package_extension() -> dict:
         os.remove(ZIP_OUTPUT_PATH)
 
     with zipfile.ZipFile(ZIP_OUTPUT_PATH, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zipf:
+        # Write configured manifest.json
+        manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
+        zipf.writestr("manifest.json", manifest_bytes)
+        included_files.append(("manifest.json", len(manifest_bytes)))
+        total_uncompressed_bytes += len(manifest_bytes)
+
         for root, dirs, files in os.walk(EXT_DIR):
-            # Sort for deterministic archive layout
             dirs.sort()
             files.sort()
 
             for filename in files:
+                if filename == "manifest.json":
+                    continue  # already written with generated permissions
+
                 ext = os.path.splitext(filename)[1].lower()
                 if filename in EXCLUDED_FILENAMES or ext in EXCLUDED_EXTENSIONS:
                     continue

@@ -1,0 +1,275 @@
+services:
+  caddy:
+    image: caddy:2.9.1-alpine
+    container_name: edgemind-prod-caddy
+    restart: unless-stopped
+    ports:
+      # Exposes ONLY HTTP (80) and HTTPS (443) on public network interfaces
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN_NAME: ${DOMAIN_NAME:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  backend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-edgemind-backend:production}
+    container_name: edgemind-prod-backend
+    restart: unless-stopped
+    # Port 8000 is intentionally NOT exposed on host interfaces; accessible only to Caddy via edgemind-prod-net
+    environment:
+      APP_NAME: ${APP_NAME:-EdgeMind API}
+      APP_VERSION: ${APP_VERSION:-1.0.0}
+      ENVIRONMENT: production
+      HOST: "0.0.0.0"
+      PORT: 8000
+      DEBUG: "false"
+      STATIC_ONLY: "true"
+
+      # Internal Docker Networking - PostgreSQL Database
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be explicitly configured}@postgres:5432/${POSTGRES_DB:-edgemind}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-8}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-12}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30.0}
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+      DB_POOL_PRE_PING: "true"
+
+      # Internal Docker Networking - Redis Cache
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}@redis:6379/0
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}
+      REDIS_POOL_SIZE: ${REDIS_POOL_SIZE:-15}
+      CACHE_ENABLED: "true"
+      CACHE_DEFAULT_TTL: ${CACHE_DEFAULT_TTL:-3600}
+      CACHE_KEY_PREFIX: ${CACHE_KEY_PREFIX:-edgemind:cache:v1}
+
+      # Internal Docker Networking - Dedicated Rate Limiting Redis
+      REDIS_RATE_LIMIT_URL: redis://:${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD}}@redis-rate-limit:6379/0
+      REDIS_RATE_LIMIT_PASSWORD: ${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD}}
+      RATE_LIMIT_ENABLED: "true"
+      RATE_LIMIT_FALLBACK_ALLOW: "false"
+      RATE_LIMIT_DEFAULT_LIMIT: ${RATE_LIMIT_DEFAULT_LIMIT:-60}
+      RATE_LIMIT_DEFAULT_WINDOW: ${RATE_LIMIT_DEFAULT_WINDOW:-60}
+      RATE_LIMIT_AGENT_LIMIT: ${RATE_LIMIT_AGENT_LIMIT:-10}
+      RATE_LIMIT_AGENT_WINDOW: ${RATE_LIMIT_AGENT_WINDOW:-60}
+      TRUSTED_PROXY_IPS: ${TRUSTED_PROXY_IPS:-["127.0.0.1", "caddy"]}
+
+      # Production AI Reasoning & RAG (Internal Ollama Container Service)
+      EDGEMIND_AGENT_PROVIDER: ollama
+      AGENT_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+      EDGEMIND_OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120.0}
+      RAG_EMBEDDING_PROVIDER: ollama
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-all-minilm:latest}
+      OLLAMA_EMBEDDING_DIMENSIONS: 384
+
+      # JWT Authentication & Multi-Tenancy
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be explicitly configured in production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      JWT_ISSUER: ${JWT_ISSUER:-edgemind-api}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-edgemind-client}
+
+      # Administrator Bootstrap Credentials
+      ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
+      ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+
+      # Production CORS & Exact Chrome Extension Isolation
+      CORS_ORIGINS: ${CORS_ORIGINS:-["https://edgemind.example.com"]}
+      EDGEMIND_CHROME_EXTENSION_ID: ${EDGEMIND_CHROME_EXTENSION_ID:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      redis-rate-limit:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1536M
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg16
+    container_name: edgemind-prod-postgres
+    restart: unless-stopped
+    # Port 5432 is strictly private to edgemind-prod-net; never bound to host interfaces
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be explicitly configured}
+      POSTGRES_DB: ${POSTGRES_DB:-edgemind}
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1536M
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-edgemind}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2.17-alpine3.21
+    container_name: edgemind-prod-redis
+    restart: unless-stopped
+    # Port 6379 is strictly private to edgemind-prod-net; never bound to host interfaces
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --rename-command RESTORE ""
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+    volumes:
+      - redis_cache_prod_data:/data
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 384M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis-rate-limit:
+    image: redis:7.2.17-alpine3.21
+    container_name: edgemind-prod-redis-rate-limit
+    restart: unless-stopped
+    # Port 6379 is strictly private to edgemind-prod-net; never bound to host interfaces
+    command: >
+      redis-server
+      --requirepass ${REDIS_RATE_LIMIT_PASSWORD:-${REDIS_PASSWORD:?REDIS_PASSWORD must be explicitly configured}}
+      --maxmemory 128mb
+      --maxmemory-policy noeviction
+      --save 900 1
+      --rename-command RESTORE ""
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+    volumes:
+      - redis_rate_limit_prod_data:/data
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_RATE_LIMIT_PASSWORD:-$$REDIS_PASSWORD} --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:0.5.7
+    container_name: edgemind-prod-ollama
+    restart: unless-stopped
+    # Port 11434 is strictly private to edgemind-prod-net; never bound to host interfaces
+    environment:
+      # Conservative inference concurrency for CPU execution on ARM64 Ampere A1 (no discrete GPU)
+      OLLAMA_NUM_PARALLEL: 1
+      OLLAMA_MAX_LOADED_MODELS: 2
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_MODELS: "/root/.ollama/models"
+    volumes:
+      - ollama_prod_data:/root/.ollama
+    networks:
+      - edgemind-prod-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.8'
+          memory: 6144M
+        reservations:
+          cpus: '0.5'
+          memory: 3072M
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres_prod_data:
+    driver: local
+  redis_cache_prod_data:
+    driver: local
+  redis_rate_limit_prod_data:
+    driver: local
+  ollama_prod_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+
+networks:
+  edgemind-prod-net:
+    name: edgemind-prod-net
+    driver: bridge
