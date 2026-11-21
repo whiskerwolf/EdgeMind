@@ -613,3 +613,344 @@ def test_popup_js_fallback_policy_strictly_before_streaming():
     assert stream_idx < fallback_check_idx < consume_idx, (
         "Fallback verification must precede consumeSseStream call"
     )
+
+
+def test_node_adapt_edgemind_report_agent_analyze_response():
+    """
+    Verify adaptEdgeMindReport normalizes AgentAnalyzeResponse with nested
+    code_report into the canonical schema expected by popup.js renderReport.
+    """
+    node_test_script = r"""
+    const fs = require('fs');
+    const vm = require('vm');
+
+    const popupCode = fs.readFileSync('extension/edgemind/popup/popup.js', 'utf-8');
+    const startIdx = popupCode.indexOf('function adaptEdgeMindReport');
+    const nextDocIdx = popupCode.indexOf('/**', startIdx);
+    const fnStr = popupCode.slice(startIdx, nextDocIdx).trim();
+    if (!fnStr || !fnStr.startsWith('function adaptEdgeMindReport')) {
+      console.error("Could not find adaptEdgeMindReport function");
+      process.exit(1);
+    }
+
+    const testEnv = { console: console };
+    vm.createContext(testEnv);
+    vm.runInContext(fnStr, testEnv);
+
+    // Simulated AgentAnalyzeResponse payload (nested code_report)
+    const agentPayload = {
+      product: "EdgeMind",
+      version: "1.0.0",
+      status: "SUCCESS",
+      session_id: "test-sess-1234",
+      iterations: 3,
+      execution_mode: "AI_AGENT",
+      final_summary: "Analysis complete",
+      analysis_mode: "BASELINE_DRIVEN",
+      baseline_available: true,
+      context_completeness: "DETECTED",
+      identified_parameters: ["nums", "target"],
+      parsed_constraints: { status: "PARSED", count: 2 },
+      code_analysis: {
+        static_metrics: { loc: 15, cyclomatic_complexity: 2 },
+        findings_count: 0,
+        code_report: {
+          file: "solution.py",
+          score: 95,
+          overall_status: "PASS",
+          detailed_errors: [],
+          detailed_warnings: [],
+          summary: {
+            syntax: "PASS",
+            logic: "PASS",
+            quality: "PASS",
+            complexity: "PASS",
+            runtime: "SKIPPED"
+          }
+        }
+      },
+      test_intelligence: {
+        existing_tests_analyzed: 2,
+        coverage_gaps: [
+          { gap_type: "BOUNDARY_ZERO", description: "Target near 0 boundary", severity: "HIGH" }
+        ],
+        total_gaps: 1,
+        generated_candidates: [
+          { input_data: { nums: [0, 0], target: 0 }, description: "Zero boundary", heuristic_tags: ["ZERO_VALUE"] }
+        ],
+        ranked_candidates: [
+          { input_data: { nums: [0, 0], target: 0 }, description: "Zero boundary", rank: 1, priority_score: 9.5 }
+        ],
+        ranking_summary: {
+          total_evaluated: 1,
+          selection_limit: 10,
+          exact_duplicates_removed: 0
+        },
+        detected_patterns: { loop_invariants: true }
+      },
+      usage: { prompt_tokens: 120, completion_tokens: 45, total_tokens: 165 }
+    };
+
+    const adapted = testEnv.adaptEdgeMindReport(agentPayload);
+
+    // Verify unnested code health properties
+    if (adapted.code_analysis.score !== 95) {
+      console.error("Expected score 95, got:", adapted.code_analysis.score);
+      process.exit(1);
+    }
+    if (adapted.code_analysis.overall_status !== "PASS") {
+      console.error("Expected overall_status PASS, got:", adapted.code_analysis.overall_status);
+      process.exit(1);
+    }
+    if (!Array.isArray(adapted.code_analysis.detailed_errors)) {
+      console.error("Expected detailed_errors to be an array");
+      process.exit(1);
+    }
+    if (adapted.code_analysis.summary.syntax !== "PASS") {
+      console.error("Expected summary.syntax PASS");
+      process.exit(1);
+    }
+
+    // Verify test intelligence properties
+    if (!Array.isArray(adapted.test_intelligence.coverage_gaps) || adapted.test_intelligence.coverage_gaps.length !== 1) {
+      console.error("Expected coverage_gaps to have 1 item");
+      process.exit(1);
+    }
+    if (!Array.isArray(adapted.test_intelligence.generated_candidates) || adapted.test_intelligence.generated_candidates.length !== 1) {
+      console.error("Expected generated_candidates to have 1 item");
+      process.exit(1);
+    }
+    if (adapted.analysis_mode !== "BASELINE_DRIVEN") {
+      console.error("Expected analysis_mode BASELINE_DRIVEN");
+      process.exit(1);
+    }
+    if (adapted.baseline_available !== true) {
+      console.error("Expected baseline_available true");
+      process.exit(1);
+    }
+
+    console.log("SUCCESS: adaptEdgeMindReport successfully normalized AgentAnalyzeResponse");
+    process.exit(0);
+    """
+
+    proc = subprocess.run(
+        ["node", "-e", node_test_script],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"Node test failed: {proc.stderr}\n{proc.stdout}"
+    assert "SUCCESS: adaptEdgeMindReport successfully normalized AgentAnalyzeResponse" in proc.stdout
+
+
+def test_node_adapt_edgemind_report_legacy_structure():
+    """
+    Verify adaptEdgeMindReport preserves legacy flat /api/v1/edgemind/analyze response structure.
+    """
+    node_test_script = r"""
+    const fs = require('fs');
+    const vm = require('vm');
+
+    const popupCode = fs.readFileSync('extension/edgemind/popup/popup.js', 'utf-8');
+    const startIdx = popupCode.indexOf('function adaptEdgeMindReport');
+    const nextDocIdx = popupCode.indexOf('/**', startIdx);
+    const fnStr = popupCode.slice(startIdx, nextDocIdx).trim();
+    if (!fnStr || !fnStr.startsWith('function adaptEdgeMindReport')) {
+      console.error("Could not find adaptEdgeMindReport function");
+      process.exit(1);
+    }
+
+    const testEnv = { console: console };
+    vm.createContext(testEnv);
+    vm.runInContext(fnStr, testEnv);
+
+    // Legacy flat response
+    const legacyPayload = {
+      product: "EdgeMind",
+      version: "1.0.0",
+      status: "SUCCESS",
+      analysis_mode: "BASELINE_DRIVEN",
+      baseline_available: true,
+      context_completeness: "DETECTED",
+      identified_parameters: ["nums", "target"],
+      parsed_constraints: { status: "PARSED" },
+      code_analysis: {
+        score: 88,
+        overall_status: "PASS WITH WARNINGS",
+        detailed_errors: [],
+        detailed_warnings: [{ message: "Missing docstring", rule: "PEP257" }],
+        summary: { syntax: "PASS", logic: "PASS", quality: "WARN", complexity: "PASS", runtime: "SKIPPED" }
+      },
+      test_intelligence: {
+        existing_tests_analyzed: 3,
+        coverage_gaps: [],
+        total_gaps: 0,
+        generated_candidates: [{ input_data: [1, 2] }],
+        ranked_candidates: [{ input_data: [1, 2] }],
+        ranking_summary: { total_evaluated: 1, selection_limit: 10, exact_duplicates_removed: 0 },
+        detected_patterns: {}
+      }
+    };
+
+    const adapted = testEnv.adaptEdgeMindReport(legacyPayload);
+    if (adapted.code_analysis.score !== 88) {
+      console.error("Expected score 88, got:", adapted.code_analysis.score);
+      process.exit(1);
+    }
+    if (adapted.code_analysis.overall_status !== "PASS WITH WARNINGS") {
+      console.error("Expected PASS WITH WARNINGS, got:", adapted.code_analysis.overall_status);
+      process.exit(1);
+    }
+    if (adapted.code_analysis.detailed_warnings.length !== 1) {
+      console.error("Expected 1 warning");
+      process.exit(1);
+    }
+
+    console.log("SUCCESS: adaptEdgeMindReport preserved legacy structure");
+    process.exit(0);
+    """
+
+    proc = subprocess.run(
+        ["node", "-e", node_test_script],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"Node test failed: {proc.stderr}\n{proc.stdout}"
+    assert "SUCCESS: adaptEdgeMindReport preserved legacy structure" in proc.stdout
+
+
+def test_node_adapt_edgemind_report_missing_optional_fields():
+    """
+    Verify adaptEdgeMindReport safely handles missing/null optional fields without crashing.
+    """
+    node_test_script = r"""
+    const fs = require('fs');
+    const vm = require('vm');
+
+    const popupCode = fs.readFileSync('extension/edgemind/popup/popup.js', 'utf-8');
+    const startIdx = popupCode.indexOf('function adaptEdgeMindReport');
+    const nextDocIdx = popupCode.indexOf('/**', startIdx);
+    const fnStr = popupCode.slice(startIdx, nextDocIdx).trim();
+    if (!fnStr || !fnStr.startsWith('function adaptEdgeMindReport')) {
+      console.error("Could not find adaptEdgeMindReport function");
+      process.exit(1);
+    }
+
+    const testEnv = { console: console };
+    vm.createContext(testEnv);
+    vm.runInContext(fnStr, testEnv);
+
+    // Minimal payload with null/missing optional fields
+    const minimalPayload = {
+      status: "SUCCESS",
+      code_analysis: null,
+      test_intelligence: {
+        coverage_gaps: null,
+        generated_candidates: null,
+        ranking_summary: null,
+        detected_patterns: null
+      }
+    };
+
+    const adapted = testEnv.adaptEdgeMindReport(minimalPayload);
+
+    if (adapted.code_analysis.score !== 100) {
+      console.error("Expected fallback score 100, got:", adapted.code_analysis.score);
+      process.exit(1);
+    }
+    if (adapted.code_analysis.overall_status !== "PASS") {
+      console.error("Expected fallback overall_status PASS, got:", adapted.code_analysis.overall_status);
+      process.exit(1);
+    }
+    if (!Array.isArray(adapted.test_intelligence.coverage_gaps) || adapted.test_intelligence.coverage_gaps.length !== 0) {
+      console.error("Expected coverage_gaps default empty array");
+      process.exit(1);
+    }
+    if (!Array.isArray(adapted.test_intelligence.generated_candidates) || adapted.test_intelligence.generated_candidates.length !== 0) {
+      console.error("Expected generated_candidates default empty array");
+      process.exit(1);
+    }
+    if (typeof adapted.test_intelligence.detected_patterns !== "object") {
+      console.error("Expected detected_patterns default object");
+      process.exit(1);
+    }
+
+    console.log("SUCCESS: adaptEdgeMindReport safely defaulted missing optional fields");
+    process.exit(0);
+    """
+
+    proc = subprocess.run(
+        ["node", "-e", node_test_script],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"Node test failed: {proc.stderr}\n{proc.stdout}"
+    assert "SUCCESS: adaptEdgeMindReport safely defaulted missing optional fields" in proc.stdout
+
+
+def test_node_adapt_edgemind_report_invalid_inputs():
+    """
+    Verify adaptEdgeMindReport throws descriptive errors when given non-object or missing test_intelligence.
+    """
+    node_test_script = r"""
+    const fs = require('fs');
+    const vm = require('vm');
+
+    const popupCode = fs.readFileSync('extension/edgemind/popup/popup.js', 'utf-8');
+    const startIdx = popupCode.indexOf('function adaptEdgeMindReport');
+    const nextDocIdx = popupCode.indexOf('/**', startIdx);
+    const fnStr = popupCode.slice(startIdx, nextDocIdx).trim();
+    if (!fnStr || !fnStr.startsWith('function adaptEdgeMindReport')) {
+      console.error("Could not find adaptEdgeMindReport function");
+      process.exit(1);
+    }
+
+    const testEnv = { console: console };
+    vm.createContext(testEnv);
+    vm.runInContext(fnStr, testEnv);
+
+    // 1. Null input
+    let threwNull = false;
+    try {
+      testEnv.adaptEdgeMindReport(null);
+    } catch (e) {
+      threwNull = e.message.includes("expected EdgeMind report schema");
+    }
+    if (!threwNull) {
+      console.error("Expected descriptive error for null input");
+      process.exit(1);
+    }
+
+    // 2. Missing test_intelligence
+    let threwMissingTI = false;
+    try {
+      testEnv.adaptEdgeMindReport({ code_analysis: {} });
+    } catch (e) {
+      threwMissingTI = e.message.includes("test_intelligence");
+    }
+    if (!threwMissingTI) {
+      console.error("Expected descriptive error for missing test_intelligence");
+      process.exit(1);
+    }
+
+    console.log("SUCCESS: adaptEdgeMindReport raised descriptive errors on invalid inputs");
+    process.exit(0);
+    """
+
+    proc = subprocess.run(
+        ["node", "-e", node_test_script],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, f"Node test failed: {proc.stderr}\n{proc.stdout}"
+    assert "SUCCESS: adaptEdgeMindReport raised descriptive errors on invalid inputs" in proc.stdout
+
+
+def test_popup_js_contains_streaming_fallback_when_stream_finishes_empty():
+    """
+    Verify popup.js contains fallback logic to request deterministic report if
+    streaming finishes without a final completed report.
+    """
+    content = POPUP_JS_PATH.read_text(encoding="utf-8")
+    assert "Streaming ended without final report" in content
+    assert "FALLBACK_ENDPOINT" in content
+    assert "adaptEdgeMindReport(reportData)" in content

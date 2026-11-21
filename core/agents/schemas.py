@@ -431,6 +431,26 @@ class AgentAnalyzeResponse(BaseModel):
         default=None,
         description="Static code analysis findings and metrics",
     )
+    analysis_mode: Optional[str] = Field(
+        default="BASELINE_DRIVEN",
+        description="Operating mode: BASELINE_DRIVEN or CONTEXT_BASED",
+    )
+    baseline_available: Optional[bool] = Field(
+        default=True,
+        description="Whether baseline public examples were available",
+    )
+    context_completeness: Optional[str] = Field(
+        default="DETECTED",
+        description="Completeness of extracted problem context",
+    )
+    identified_parameters: List[str] = Field(
+        default_factory=list,
+        description="Parameter names identified from solution or context",
+    )
+    parsed_constraints: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Constraints parsed from problem description",
+    )
     total_duration_ms: float = Field(default=0.0, description="Total execution duration in milliseconds")
     persisted_report_id: Optional[str] = Field(
         default=None,

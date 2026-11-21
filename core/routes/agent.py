@@ -213,7 +213,11 @@ async def agent_analyze_stream_endpoint(
         test_max_bytes = request.headers.get("x-test-max-stream-bytes")
         test_timeout = request.headers.get("x-test-stream-timeout")
         max_stream_bytes = int(test_max_bytes) if test_max_bytes and test_max_bytes.isdigit() else (512 * 1024)
-        max_stream_duration = float(test_timeout) if test_timeout else 35.0
+        max_stream_duration = (
+            float(test_timeout)
+            if test_timeout
+            else max(float(settings.agent_session_timeout) + 15.0, 105.0)
+        )
         stream_start_time = time.perf_counter()
         stream_gen = None
 

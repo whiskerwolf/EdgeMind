@@ -203,13 +203,17 @@ def parse_test_cases(raw_cases: Any) -> List[Any]:
                 f"Test case at index {idx} must be a dictionary, got {type(item).__name__}."
             )
 
-        if "input_data" in item:
-            raw_input = item.get("input_data")
+        item_copy = dict(item)
+        if "input" in item_copy and "input_data" not in item_copy and isinstance(item_copy["input"], dict):
+            item_copy["input_data"] = item_copy.pop("input")
+
+        if "input_data" in item_copy:
+            raw_input = item_copy.get("input_data")
             if not isinstance(raw_input, dict):
                 raise TypeError(
                     f"Test case at index {idx} 'input_data' must be a dictionary, got {type(raw_input).__name__}."
                 )
-            tc = TestCase.from_dict(item)
+            tc = TestCase.from_dict(item_copy)
             if not tc.id:
                 tc.id = f"test_{idx + 1}"
             parsed_cases.append(tc)

@@ -1603,6 +1603,161 @@
   }
 
   /**
+   * Adapts and normalizes backend analysis responses (from SSE streaming 'completed'
+   * events or legacy /api/v1/edgemind/analyze JSON) into the canonical EdgeMind report schema.
+   * Ensures backward and forward compatibility, safe field fallbacks, and code health unwrapping.
+   *
+   * @param {Object} raw - Raw API response object from backend.
+   * @returns {Object} Normalized canonical EdgeMind report object.
+   */
+  function adaptEdgeMindReport(raw) {
+    if (!raw || typeof raw !== "object") {
+      throw new Error("API response did not match the expected EdgeMind report schema: response is empty or non-object.");
+    }
+
+    if (!raw.test_intelligence || typeof raw.test_intelligence !== "object") {
+      throw new Error("API response did not match the expected EdgeMind report schema: missing 'test_intelligence'.");
+    }
+
+    // 1. Normalize code analysis (unwrap code_report if nested under AgentAnalyzeResponse)
+    const rawCA = raw.code_analysis || {};
+    const nestedCR = (rawCA.code_report && typeof rawCA.code_report === "object") ? rawCA.code_report : null;
+    const effectiveCA = nestedCR || rawCA;
+
+    const score = typeof rawCA.score === "number"
+      ? rawCA.score
+      : (typeof effectiveCA.score === "number" ? effectiveCA.score : 100);
+
+    const overallStatus = rawCA.overall_status
+      || effectiveCA.overall_status
+      || rawCA.status
+      || effectiveCA.status
+      || "PASS";
+
+    const detailedErrors = Array.isArray(rawCA.detailed_errors)
+      ? rawCA.detailed_errors
+      : (Array.isArray(effectiveCA.detailed_errors)
+          ? effectiveCA.detailed_errors
+          : (Array.isArray(effectiveCA.errors) ? effectiveCA.errors : []));
+
+    const detailedWarnings = Array.isArray(rawCA.detailed_warnings)
+      ? rawCA.detailed_warnings
+      : (Array.isArray(effectiveCA.detailed_warnings)
+          ? effectiveCA.detailed_warnings
+          : (Array.isArray(effectiveCA.warnings) ? effectiveCA.warnings : []));
+
+    const summary = (rawCA.summary && typeof rawCA.summary === "object")
+      ? rawCA.summary
+      : ((effectiveCA.summary && typeof effectiveCA.summary === "object")
+          ? effectiveCA.summary
+          : {
+              syntax: rawCA.syntax_status || effectiveCA.syntax_status || "PASS",
+              logic: rawCA.logic_status || effectiveCA.logic_status || "PASS",
+              quality: rawCA.quality_status || effectiveCA.quality_status || "PASS",
+              complexity: rawCA.complexity_status || effectiveCA.complexity_status || "PASS",
+              runtime: rawCA.runtime_status || effectiveCA.runtime_status || "SKIPPED"
+            });
+
+    const normalizedCodeAnalysis = {
+      score: score,
+      overall_status: overallStatus,
+      status: overallStatus,
+      detailed_errors: detailedErrors,
+      detailed_warnings: detailedWarnings,
+      errors: detailedErrors,
+      warnings: detailedWarnings,
+      summary: summary,
+      static_metrics: rawCA.static_metrics || effectiveCA.metrics || {},
+      findings_count: (typeof rawCA.findings_count === "number")
+        ? rawCA.findings_count
+        : (detailedErrors.length + detailedWarnings.length),
+      code_report: nestedCR || effectiveCA
+    };
+
+    // 2. Normalize test intelligence
+    const rawTI = raw.test_intelligence;
+
+    const candidates = Array.isArray(rawTI.generated_candidates)
+      ? rawTI.generated_candidates
+      : (Array.isArray(rawTI.candidates)
+          ? rawTI.candidates
+          : (Array.isArray(rawTI.selected_candidates) ? rawTI.selected_candidates : []));
+
+    const rankedCandidates = Array.isArray(rawTI.ranked_candidates)
+      ? rawTI.ranked_candidates
+      : candidates;
+
+    const coverageGaps = Array.isArray(rawTI.coverage_gaps)
+      ? rawTI.coverage_gaps
+      : (Array.isArray(rawTI.gaps) ? rawTI.gaps : []);
+
+    const rankingSummary = (rawTI.ranking_summary && typeof rawTI.ranking_summary === "object")
+      ? rawTI.ranking_summary
+      : {
+          total_evaluated: candidates.length,
+          selection_limit: candidates.length || 10,
+          exact_duplicates_removed: 0
+        };
+
+    const detectedPatterns = (rawTI.detected_patterns && typeof rawTI.detected_patterns === "object")
+      ? rawTI.detected_patterns
+      : {};
+
+    const existingTestsAnalyzed = typeof rawTI.existing_tests_analyzed === "number"
+      ? rawTI.existing_tests_analyzed
+      : 0;
+
+    const normalizedTestIntelligence = {
+      existing_tests_analyzed: existingTestsAnalyzed,
+      coverage_gaps: coverageGaps,
+      total_gaps: coverageGaps.length,
+      generated_candidates: candidates,
+      ranked_candidates: rankedCandidates,
+      ranking_summary: rankingSummary,
+      detected_patterns: detectedPatterns,
+      retrieved_knowledge: Array.isArray(rawTI.retrieved_knowledge) ? rawTI.retrieved_knowledge : []
+    };
+
+    // 3. Determine analysis mode and metadata
+    const baselineAvailable = (typeof raw.baseline_available === "boolean")
+      ? raw.baseline_available
+      : (existingTestsAnalyzed > 0);
+
+    const analysisMode = raw.analysis_mode
+      || (baselineAvailable ? "BASELINE_DRIVEN" : "CONTEXT_BASED");
+
+    const contextCompleteness = raw.context_completeness || "DETECTED";
+
+    const identifiedParameters = Array.isArray(raw.identified_parameters)
+      ? raw.identified_parameters
+      : (Array.isArray(raw.context && raw.context.parameters) ? raw.context.parameters : []);
+
+    const parsedConstraints = (raw.parsed_constraints && typeof raw.parsed_constraints === "object")
+      ? raw.parsed_constraints
+      : (raw.context && typeof raw.context.constraints === "object" ? raw.context.constraints : {});
+
+    return {
+      product: raw.product || "EdgeMind",
+      version: raw.version || "1.0.0",
+      status: raw.status || "SUCCESS",
+      session_id: raw.session_id || "",
+      analysis_mode: analysisMode,
+      baseline_available: baselineAvailable,
+      context_completeness: contextCompleteness,
+      identified_parameters: identifiedParameters,
+      parsed_constraints: parsedConstraints,
+      code_analysis: normalizedCodeAnalysis,
+      test_intelligence: normalizedTestIntelligence,
+      usage: raw.usage || null,
+      model: raw.model || "",
+      warnings: Array.isArray(raw.warnings) ? raw.warnings : [],
+      limitations: Array.isArray(raw.limitations) ? raw.limitations : [],
+      agent_audit: raw.agent_audit || null,
+      context: raw.context || {}
+    };
+  }
+
+  /**
    * Render complete EdgeMind report.
    */
   function renderReport(report) {
@@ -2005,7 +2160,7 @@
       // 7. Dispatch analysis request to EdgeMind API (Streaming with Fallback)
       const controller = new AbortController();
       currentAnalysisController = controller;
-      const timeoutId = setTimeout(() => controller.abort(), 35000);
+      const timeoutId = setTimeout(() => controller.abort(), 110000);
 
       const STREAM_ENDPOINT = `${API_BASE_URL}/api/v1/agent/analyze/stream`;
       const FALLBACK_ENDPOINT = `${API_BASE_URL}/api/v1/edgemind/analyze`;
@@ -2116,6 +2271,33 @@
               break;
           }
         }, controller.signal);
+
+        // Fallback to deterministic endpoint if stream ended without completed event or with error
+        if (!reportData && !controller.signal.aborted) {
+          try {
+            elLoadingMessage.textContent = "Streaming ended without final report. Requesting deterministic analysis...";
+            const fallbackResp = await fetch(FALLBACK_ENDPOINT, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                code: code,
+                filename: "leetcode_solution.py",
+                problem_context: problemContext,
+                test_cases: testCases,
+                max_candidates: 10
+              }),
+              signal: controller.signal
+            });
+            if (fallbackResp.ok) {
+              reportData = await fallbackResp.json();
+              streamError = null;
+            }
+          } catch {
+            // Secondary fallback attempt failed; fall through to reporting error
+          }
+        }
       } else {
         try {
           reportData = await response.json();
@@ -2124,27 +2306,33 @@
         }
       }
 
-      if (streamError) {
+      if (streamError && !reportData) {
         showError(streamError);
+        return;
       }
 
-      if (!reportData || typeof reportData !== "object" || !("test_intelligence" in reportData)) {
-        if (!streamError) {
+      if (!reportData || typeof reportData !== "object") {
+        if (streamError) {
+          showError(streamError);
+        } else {
           throw new Error("API response did not match the expected EdgeMind report schema.");
         }
         return;
       }
 
-      // 9. Handle INSUFFICIENT_CONTEXT warning gracefully
-      if (reportData.status === "INSUFFICIENT_CONTEXT") {
-        const warningMsg = (reportData.warnings && reportData.warnings.length > 0)
-          ? reportData.warnings[0]
+      // 9. Adapt and normalize report schema
+      const adaptedReport = adaptEdgeMindReport(reportData);
+
+      // 10. Handle INSUFFICIENT_CONTEXT warning gracefully
+      if (adaptedReport.status === "INSUFFICIENT_CONTEXT") {
+        const warningMsg = (adaptedReport.warnings && adaptedReport.warnings.length > 0)
+          ? adaptedReport.warnings[0]
           : "No public examples detected on this problem page.";
         showError(warningMsg);
       }
 
-      // 10. Render final report
-      renderReport(reportData);
+      // 11. Render final report
+      renderReport(adaptedReport);
     } catch (err) {
       showError(err.message || "An unexpected error occurred during analysis.");
     } finally {
@@ -2225,4 +2413,12 @@
       });
     }
   });
+
+  // Export adaptEdgeMindReport and consumeSseStream for Node.js test environment if present
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = {
+      adaptEdgeMindReport: typeof adaptEdgeMindReport !== "undefined" ? adaptEdgeMindReport : null,
+      consumeSseStream: typeof consumeSseStream !== "undefined" ? consumeSseStream : null
+    };
+  }
 })();

@@ -99,9 +99,14 @@ class Settings(BaseSettings):
         description="Default model for local Ollama reasoning",
     )
     ollama_timeout: float = Field(
-        default=60.0,
+        default=75.0,
         validation_alias=AliasChoices("ollama_timeout", "edgemind_ollama_timeout", "OLLAMA_TIMEOUT", "EDGEMIND_OLLAMA_TIMEOUT"),
         description="Request timeout in seconds for local Ollama inference",
+    )
+    ollama_num_predict: int = Field(
+        default=512,
+        validation_alias=AliasChoices("ollama_num_predict", "edgemind_ollama_num_predict", "OLLAMA_NUM_PREDICT", "EDGEMIND_OLLAMA_NUM_PREDICT"),
+        description="Maximum completion tokens generated per Ollama inference turn",
     )
 
     # External AI Reasoning & Secrets
@@ -115,7 +120,7 @@ class Settings(BaseSettings):
     agent_max_iterations: int = Field(default=5, description="Maximum iterative reasoning cycles for the multi-step agent")
     agent_max_tool_calls: int = Field(default=15, description="Maximum total tool executions allowed per agent session")
     agent_tool_timeout: float = Field(default=10.0, description="Per-tool execution timeout in seconds")
-    agent_session_timeout: float = Field(default=60.0, description="Maximum total wall-clock timeout for an agent session in seconds")
+    agent_session_timeout: float = Field(default=90.0, description="Maximum total wall-clock timeout for an agent session in seconds")
     agent_pricing_version: str = Field(default="2026-11-01", description="Default pricing catalog version for API cost calculation")
     agent_enable_local_token_estimates: bool = Field(default=False, description="Whether to compute clearly labeled local token estimates when provider metadata is absent")
 

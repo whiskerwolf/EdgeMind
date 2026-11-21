@@ -75,8 +75,17 @@ class RegisteredTool:
     def to_openai_schema(self) -> Dict[str, Any]:
         """Convert tool to OpenAI/Gemini-compatible function calling schema."""
         schema = self.args_model.model_json_schema()
-        # Clean title / description root keys if desired
-        schema.pop("title", None)
+
+        def _clean_schema(s: Any) -> None:
+            if isinstance(s, dict):
+                s.pop("title", None)
+                for v in s.values():
+                    _clean_schema(v)
+            elif isinstance(s, list):
+                for item in s:
+                    _clean_schema(item)
+
+        _clean_schema(schema)
         return {
             "type": "function",
             "function": {
@@ -552,7 +561,7 @@ def create_default_tool_registry() -> ToolRegistry:
         description="Perform semantic vector retrieval from the EdgeMind knowledge base to discover relevant algorithmic patterns, standard edge-case checklists, and domain invariants.",
         args_model=RetrieveKnowledgeContextArgs,
         handler=retrieve_knowledge_context_handler,
-        timeout_seconds=5.0,
+        timeout_seconds=10.0,
     )
 
     return registry

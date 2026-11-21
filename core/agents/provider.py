@@ -775,6 +775,13 @@ class ThinkTagFilter:
         while self.buffer:
             if not self.in_think:
                 start = self.buffer.find("<think>")
+                orphan_end = self.buffer.find("</think>")
+
+                if orphan_end != -1 and (start == -1 or orphan_end < start):
+                    # Everything up to and including orphan </think> is reasoning from template pre-fill
+                    self.buffer = self.buffer[orphan_end + len("</think>"):]
+                    continue
+
                 if start != -1:
                     if start > 0:
                         output.append(self.buffer[:start])
@@ -844,7 +851,8 @@ class OllamaAgentProvider(BaseAgentProvider):
         self._model = model or getattr(self.settings, "ollama_model", "qwen3:4b")
         raw_url = base_url or getattr(self.settings, "ollama_base_url", "http://127.0.0.1:11434")
         self._base_url = raw_url.rstrip("/")
-        self._timeout = timeout or getattr(self.settings, "ollama_timeout", 60.0)
+        self._timeout = timeout or getattr(self.settings, "ollama_timeout", 75.0)
+        self._num_predict = getattr(self.settings, "ollama_num_predict", 512)
         self._transport = transport
 
     @property
@@ -897,10 +905,16 @@ class OllamaAgentProvider(BaseAgentProvider):
         return formatted
 
     def _clean_content(self, raw_content: Optional[str]) -> Optional[str]:
-        """Strip <think>...</think> tags and trim whitespace from content."""
+        """Strip <think>...</think> tags, orphan reasoning tags, and conversational filler from content."""
         if not raw_content:
             return None
-        cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL).strip()
+        cleaned = re.sub(r"<think>.*?</think>", "", raw_content, flags=re.DOTALL)
+        if "</think>" in cleaned:
+            parts = cleaned.split("</think>", 1)
+            cleaned = parts[1]
+        # Strip leading conversational filler phrases
+        cleaned = re.sub(r"^(?:Okay,?\s+)?(?:let'?s\s+(?:tackle|see|think|analyze|break down)[^\n]*\n+)+", "", cleaned.strip(), flags=re.IGNORECASE)
+        cleaned = cleaned.strip()
         return cleaned if cleaned else None
 
     async def chat_completion(
@@ -914,8 +928,11 @@ class OllamaAgentProvider(BaseAgentProvider):
             "model": self._model,
             "messages": self._format_messages(messages),
             "stream": False,
+            "think": False,
             "options": {
                 "temperature": temperature,
+                "num_ctx": 4096,
+                "num_predict": self._num_predict,
             },
         }
         if tools:
@@ -1062,8 +1079,11 @@ class OllamaAgentProvider(BaseAgentProvider):
             "model": self._model,
             "messages": self._format_messages(messages),
             "stream": True,
+            "think": False,
             "options": {
                 "temperature": temperature,
+                "num_ctx": 4096,
+                "num_predict": self._num_predict,
             },
         }
         if tools:
@@ -1201,7 +1221,7 @@ class OllamaAgentProvider(BaseAgentProvider):
                         )
 
                     finish_reason = "interrupted" if stream_interrupted else ("tool_calls" if accumulated_tool_calls else "stop")
-                    final_content = "".join(accumulated_content).strip() if accumulated_content else None
+                    final_content = self._clean_content("".join(accumulated_content)) if accumulated_content else None
 
                     yield AgentStepResult(
                         content=final_content,

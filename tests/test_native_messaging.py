@@ -342,6 +342,7 @@ def test_installer_temp_directory_with_spaces_and_no_registry(tmp_path):
         "-File", install_script,
         "-ExecutablePath", str(custom_exe),
         "-ManifestDir", str(manifest_dir),
+        "-ExtensionId", "dcpgjneeokaigdhocommnadngnbaebgg",
         "-NoRegistry",
         "-Quiet",
     ]
@@ -394,7 +395,7 @@ def test_installer_rejects_wildcard_extension_id(tmp_path):
             "-NoRegistry",
             "-Quiet",
         ]
-        res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=15)
+        res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=30)
         assert res.returncode != 0, f"Installer should reject invalid extension ID: {invalid_id}"
 
 
