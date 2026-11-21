@@ -35,6 +35,12 @@ if (-not $Quiet) {
     Write-Host "Project Root : $ProjectRoot"
 }
 
+# 0. Early Validation: If ExtensionId is explicitly passed, validate format immediately
+if ($ExtensionId -and ($ExtensionId -notmatch '^[a-p]{32}$')) {
+    Write-Error "Invalid Extension ID format: '$ExtensionId'. Must be exactly 32 lowercase letters [a-p] with zero wildcards."
+    exit 1
+}
+
 # 1. Resolve Executable Path (supports spaces and arbitrary Windows user/install directories)
 if ($ExecutablePath) {
     if (-not (Test-Path $ExecutablePath)) {

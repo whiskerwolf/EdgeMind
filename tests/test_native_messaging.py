@@ -378,6 +378,44 @@ def test_installer_temp_directory_with_spaces_and_no_registry(tmp_path):
     assert not installed_manifest.exists()
 
 
+def test_installer_default_extension_id_resolution(tmp_path):
+    """Verify that install script generates a valid Chrome origin when -ExtensionId is omitted."""
+    import shutil
+    install_script = os.path.join(SCRIPTS_DIR, "install_edgemind_native_messaging.ps1")
+    manifest_dir = tmp_path / "manifests"
+    manifest_dir.mkdir()
+
+    custom_exe = tmp_path / "edgemind_native_host.exe"
+    shutil.copy2(EXE_PATH, custom_exe)
+
+    ps_cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", install_script,
+        "-ExecutablePath", str(custom_exe),
+        "-ManifestDir", str(manifest_dir),
+        "-NoRegistry",
+        "-Quiet",
+    ]
+    res = subprocess.run(ps_cmd, capture_output=True, text=True, timeout=30)
+    assert res.returncode == 0, f"Installer failed: {res.stderr}\n{res.stdout}"
+
+    installed_manifest = manifest_dir / "com.edgemind.native_host.json"
+    assert installed_manifest.is_file()
+
+    with open(installed_manifest, "r", encoding="utf-8") as f:
+        manifest_data = json.load(f)
+
+    assert manifest_data["name"] == "com.edgemind.native_host"
+    assert manifest_data["type"] == "stdio"
+    allowed = manifest_data["allowed_origins"]
+    assert isinstance(allowed, list) and len(allowed) == 1
+    origin = allowed[0]
+    assert CHROME_ORIGIN_REGEX.match(origin), f"Generated origin does not match Chrome extension regex: {origin}"
+    assert "*" not in origin
+
+
 def test_installer_rejects_wildcard_extension_id(tmp_path):
     """Verify that install script rejects wildcard and malformed extension IDs."""
     install_script = os.path.join(SCRIPTS_DIR, "install_edgemind_native_messaging.ps1")
