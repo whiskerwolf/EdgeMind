@@ -1,0 +1,108 @@
+{
+  "name": "edgemind-vscode",
+  "displayName": "EdgeMind",
+  "description": "AI-powered static code analysis, code hygiene, and adaptive test intelligence.",
+  "version": "0.1.0",
+  "publisher": "edgemind",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Testing"
+  ],
+  "keywords": [
+    "python",
+    "static analysis",
+    "test generation",
+    "code quality",
+    "edgemind"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:edgemind.hello",
+    "onCommand:edgemind.showOutput",
+    "onCommand:edgemind.checkBackend",
+    "onCommand:edgemind.analyzeCurrentFile",
+    "onCommand:edgemind.analyzeSelection",
+    "onCommand:edgemind.clearDiagnostics",
+    "onLanguage:python"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "edgemind.hello",
+        "title": "Hello",
+        "category": "EdgeMind"
+      },
+      {
+        "command": "edgemind.showOutput",
+        "title": "Show Output Channel",
+        "category": "EdgeMind"
+      },
+      {
+        "command": "edgemind.checkBackend",
+        "title": "Check Backend Status",
+        "category": "EdgeMind"
+      },
+      {
+        "command": "edgemind.analyzeCurrentFile",
+        "title": "Analyze Current File",
+        "category": "EdgeMind"
+      },
+      {
+        "command": "edgemind.analyzeSelection",
+        "title": "Analyze Selection",
+        "category": "EdgeMind"
+      },
+      {
+        "command": "edgemind.clearDiagnostics",
+        "title": "Clear Diagnostics",
+        "category": "EdgeMind"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "when": "resourceExtname == .py",
+          "command": "edgemind.analyzeCurrentFile",
+          "group": "EdgeMind@1"
+        },
+        {
+          "when": "editorHasSelection && resourceExtname == .py",
+          "command": "edgemind.analyzeSelection",
+          "group": "EdgeMind@2"
+        },
+        {
+          "when": "resourceExtname == .py",
+          "command": "edgemind.clearDiagnostics",
+          "group": "EdgeMind@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "EdgeMind",
+      "properties": {
+        "edgemind.backendUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "Base URL of the EdgeMind FastAPI backend service.",
+          "format": "uri"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "test": "node --test out/test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.3"
+  }
+}
