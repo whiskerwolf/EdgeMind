@@ -216,6 +216,10 @@ def analyze_problem_structure_handler(
     profile_dict = None
     if args.test_cases:
         parsed_cases = parse_test_cases(args.test_cases)
+        code_in_ctx = context.get("code") if context else None
+        if code_in_ctx:
+            from core.service import normalize_test_cases_for_signature
+            parsed_cases = normalize_test_cases_for_signature(parsed_cases, code=code_in_ctx)
         ctx = ProblemContext(
             function_name=extracted.get("function_name"),
             parameters=extracted.get("parameters", []),
@@ -239,6 +243,10 @@ def detect_coverage_gaps_handler(
 ) -> Dict[str, Any]:
     """Detect unexercised input partitions and boundary conditions in test cases."""
     parsed_cases = parse_test_cases(args.test_cases)
+    code_in_ctx = context.get("code") if context else None
+    if code_in_ctx:
+        from core.service import normalize_test_cases_for_signature
+        parsed_cases = normalize_test_cases_for_signature(parsed_cases, code=code_in_ctx)
     spec = None
     if args.constraints:
         spec, _ = parse_constraint_expressions(
@@ -315,9 +323,14 @@ def generate_candidate_inputs_handler(
 ) -> Dict[str, Any]:
     """Synthesize targeted edge-case candidates addressing identified gaps."""
     parsed_cases = parse_test_cases(args.test_cases)
+    code_in_ctx = context.get("code") if context else None
+    if code_in_ctx:
+        from core.service import normalize_test_cases_for_signature
+        parsed_cases = normalize_test_cases_for_signature(parsed_cases, code=code_in_ctx)
     spec = None
+    unresolved = []
     if args.constraints:
-        spec, _ = parse_constraint_expressions(args.constraints)
+        spec, unresolved = parse_constraint_expressions(args.constraints)
 
     ctx = ProblemContext(constraint_spec=spec)
 
@@ -344,9 +357,20 @@ def generate_candidate_inputs_handler(
         max_candidates=args.max_candidates or 20,
     )
 
-    # Guarantee provenance invariant: label GENERATED_TEST with null expected output
+    # Guarantee provenance invariant and classify candidate validity
+    has_constraints = bool(args.constraints)
     out_candidates = []
     for c in candidates:
+        if spec or has_constraints:
+            classification, reason = classify_candidate(
+                candidate=c,
+                spec=spec,
+                has_supplied_constraints=has_constraints,
+                context=ctx,
+                unresolved_constraints=unresolved,
+            )
+            c.classification = classification
+            c.classification_reason = reason
         d = c.to_dict()
         d["expected_output"] = None
         d["is_expected_output_verified"] = False

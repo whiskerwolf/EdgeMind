@@ -4,6 +4,7 @@ import { Logger } from '../utils/logger';
 import { validateEditorDocument } from '../utils/editorValidator';
 import { formatReportOutput, formatSummaryNotification } from '../utils/reportFormatter';
 import { updateDocumentDiagnostics } from '../utils/diagnosticMapper';
+import { ResultsPanel } from '../ui/results/resultsPanel';
 import { getBackendUrl } from '../utils/configuration';
 
 /**
@@ -14,20 +15,36 @@ import { getBackendUrl } from '../utils/configuration';
 export async function analyzeCurrentFile(
   apiClient: ApiClient,
   logger: Logger,
-  diagnosticCollection?: vscode.DiagnosticCollection
+  diagnosticCollection?: vscode.DiagnosticCollection,
+  extensionUri?: vscode.Uri,
+  reanalyzeDocumentUri?: string
 ): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
+  let document: vscode.TextDocument;
 
-  if (!editor) {
-    vscode.window.showWarningMessage('No active editor found. Please open a Python file to analyze.');
-    logger.warn('Analyze Current File invoked without an active editor.');
-    return;
+  if (reanalyzeDocumentUri) {
+    try {
+      const uri = vscode.Uri.parse(reanalyzeDocumentUri);
+      document = await vscode.workspace.openTextDocument(uri);
+    } catch (err) {
+      logger.error(`Re-analysis failed: could not open document '${reanalyzeDocumentUri}'`, err);
+      vscode.window.showErrorMessage('EdgeMind re-analysis failed: Could not open document.');
+      return;
+    }
+  } else {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor) {
+      vscode.window.showWarningMessage('No active editor found. Please open a Python file to analyze.');
+      logger.warn('Analyze Current File invoked without an active editor.');
+      return;
+    }
+    document = editor.document;
   }
 
   const validation = validateEditorDocument(
-    editor.document.fileName,
-    editor.document.languageId,
-    editor.document.getText()
+    document.fileName,
+    document.languageId,
+    document.getText()
   );
 
   if (!validation.isValid) {
@@ -74,8 +91,30 @@ export async function analyzeCurrentFile(
         const formattedReport = formatReportOutput(report, response.durationMs);
 
         // Update VS Code native Diagnostics
-        if (diagnosticCollection && editor.document) {
-          updateDocumentDiagnostics(diagnosticCollection, editor.document, report);
+        if (diagnosticCollection && document) {
+          updateDocumentDiagnostics(diagnosticCollection, document, report);
+        }
+
+        // Show/Update Interactive Results Webview Panel
+        if (extensionUri) {
+          ResultsPanel.render(
+            extensionUri,
+            logger,
+            report,
+            {
+              scope: 'full',
+              documentUri: document.uri.toString(),
+              documentPath: document.fileName,
+              displayFilename: validation.displayFilename,
+              timestamp: new Date().toLocaleTimeString(),
+            },
+            () => analyzeCurrentFile(apiClient, logger, diagnosticCollection, extensionUri, document.uri.toString()),
+            () => {
+              if (diagnosticCollection && document) {
+                diagnosticCollection.delete(document.uri);
+              }
+            }
+          );
         }
 
         // Print full formatted report to EdgeMind OutputChannel
@@ -85,20 +124,39 @@ export async function analyzeCurrentFile(
           `Status=${report.overall_status}, Errors=${report.total_errors}, Warnings=${report.total_warnings} (${response.durationMs}ms)`
         );
 
-        // Display summary notification
+        // Display summary notification with Interactive Results action
         const summary = formatSummaryNotification(report);
-        const actionButton = 'View Full Report';
+        const actionButton = 'View Results';
+        const outputChannelAction = 'Output Channel';
 
         let selectedAction: string | undefined;
         if (report.total_errors > 0) {
-          selectedAction = await vscode.window.showErrorMessage(summary, actionButton);
+          selectedAction = await vscode.window.showErrorMessage(summary, actionButton, outputChannelAction);
         } else if (report.total_warnings > 0) {
-          selectedAction = await vscode.window.showWarningMessage(summary, actionButton);
+          selectedAction = await vscode.window.showWarningMessage(summary, actionButton, outputChannelAction);
         } else {
-          selectedAction = await vscode.window.showInformationMessage(summary, actionButton);
+          selectedAction = await vscode.window.showInformationMessage(summary, actionButton, outputChannelAction);
         }
 
         if (selectedAction === actionButton) {
+          if (ResultsPanel.currentPanel) {
+            ResultsPanel.currentPanel.reveal();
+          } else if (extensionUri) {
+            ResultsPanel.render(
+              extensionUri,
+              logger,
+              report,
+              {
+                scope: 'full',
+                documentUri: document.uri.toString(),
+                documentPath: document.fileName,
+                displayFilename: validation.displayFilename,
+                timestamp: new Date().toLocaleTimeString(),
+              },
+              () => analyzeCurrentFile(apiClient, logger, diagnosticCollection, extensionUri, document.uri.toString())
+            );
+          }
+        } else if (selectedAction === outputChannelAction) {
           logger.show(true);
         }
       } else {

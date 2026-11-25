@@ -1109,3 +1109,43 @@ async def test_live_provider_multiple_tool_call_rounds():
     assert res.tool_executions[0].tool_name == "analyze_problem_structure"
     assert res.tool_executions[1].tool_name == "parse_problem_constraints"
     assert "Multi-turn live reasoning complete" in res.final_summary
+
+
+@pytest.mark.anyio
+async def test_orchestrator_persistence_safe_gaps_and_candidates():
+    """Verify orchestrator persistence succeeds without NameError when gaps/candidates are derived from test intelligence."""
+    from unittest.mock import AsyncMock, MagicMock
+    from core.database.models import User
+
+    provider = MockAgentProvider()
+    provider.add_step(
+        AgentStepResult(
+            content="Simple static analysis completed.",
+            finish_reason="stop",
+        )
+    )
+
+    mock_db = MagicMock()
+    mock_db.add = MagicMock()
+    mock_db.flush = AsyncMock()
+
+    user = User(
+        id=uuid.uuid4(),
+        email="test_safe@example.com",
+        full_name="Safe Persistence",
+        password_hash="dummy",
+        role="user",
+    )
+
+    orchestrator = AgentOrchestrator(provider=provider, max_iterations=1)
+    req = AgentAnalyzeRequest(code="def foo(): pass")
+
+    res = await orchestrator.run(req, db=mock_db, current_user=user)
+    assert res.status == AgentStatus.SUCCESS.value
+    assert mock_db.add.called
+    added_session = mock_db.add.call_args[0][0]
+    assert hasattr(added_session, "gaps_detected")
+    assert hasattr(added_session, "candidates_generated")
+    assert isinstance(added_session.gaps_detected, int)
+    assert isinstance(added_session.candidates_generated, int)
+

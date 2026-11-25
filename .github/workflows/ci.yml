@@ -200,6 +200,36 @@ jobs:
         run: |
           pytest -v --tb=short
 
+  frontend-ci:
+    name: Frontend Test, Typecheck & Build
+    runs-on: ubuntu-latest
+    needs: security-audit
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend unit & integration tests
+        run: npm test
+
+      - name: Run TypeScript type validation
+        run: npx tsc -b
+
+      - name: Build production frontend bundle
+        run: npm run build
+
   docker-validation:
     name: Docker Image & Compose Validation
     runs-on: ubuntu-latest
@@ -211,10 +241,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Validate docker-compose.yml configuration
+      - name: Validate docker-compose.yml configurations
         run: |
           REDIS_PASSWORD="ci_redis_secure_password_test" docker compose config -q
-          echo "docker-compose.yml syntax and variable interpolation valid."
+          POSTGRES_PASSWORD="ci_pg_password_test" \
+          REDIS_PASSWORD="ci_redis_secure_password_test" \
+          JWT_SECRET_KEY="ci_jwt_secret_key_test_32chars_minimum" \
+          docker compose -f deploy/oci/docker-compose.production.yml config -q
+          echo "Docker Compose syntax and variable interpolation valid."
 
       - name: Build Backend Production Image
         uses: docker/build-push-action@v5

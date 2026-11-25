@@ -1,0 +1,12 @@
+[Unit]
+Description=Run EdgeMind Database Maintenance Daily at 03:00 UTC
+Documentation=https://github.com/whiskerwolf/EdgeMind/blob/main/deploy/oci/README.md
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=edgemind-maintenance.service
+
+[Install]
+WantedBy=timers.target

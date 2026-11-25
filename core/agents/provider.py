@@ -15,10 +15,11 @@ import json
 import logging
 import os
 import re
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Type, Union
 import uuid
 
 import httpx
+from pydantic import BaseModel
 
 from core.agents.schemas import AgentStepResult, ToolCall
 from core.config import get_settings
@@ -30,6 +31,114 @@ from core.cost import (
 )
 
 logger = logging.getLogger("edgemind.agents.provider")
+
+_OLLAMA_STRUCTURED_SCHEMA_PREFIXES = (
+    "qwen2.5",
+    "qwen3",
+    "llama3.1",
+    "llama3.2",
+    "llama3.3",
+    "mistral",
+    "gemma2",
+    "gemma3",
+    "deepseek",
+    "phi4",
+    "command-r",
+)
+
+
+def _enforce_openai_schema_node(node: Any) -> Any:
+    """Recursively enforce OpenAI strict JSON Schema invariants on object nodes."""
+    if isinstance(node, list):
+        return [_enforce_openai_schema_node(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out: Dict[str, Any] = {}
+    for k, v in node.items():
+        if k == "$defs" and isinstance(v, dict):
+            out[k] = {dk: _enforce_openai_schema_node(dv) for dk, dv in v.items()}
+        elif k == "properties" and isinstance(v, dict):
+            out[k] = {pk: _enforce_openai_schema_node(pv) for pk, pv in v.items()}
+        elif k == "items":
+            out[k] = _enforce_openai_schema_node(v)
+        elif k == "anyOf" and isinstance(v, list):
+            out[k] = [_enforce_openai_schema_node(item) for item in v]
+        else:
+            out[k] = v
+
+    if out.get("type") == "object" or "properties" in out:
+        props = out.get("properties")
+        if isinstance(props, dict):
+            out["additionalProperties"] = False
+            out["required"] = list(props.keys())
+    return out
+
+
+def build_openai_response_format(schema_cls: Type[BaseModel]) -> Dict[str, Any]:
+    """Build an OpenAI-compatible strict `response_format` payload from a Pydantic model."""
+    raw_schema = schema_cls.model_json_schema()
+    strict_schema = _enforce_openai_schema_node(raw_schema)
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": schema_cls.__name__,
+            "strict": True,
+            "schema": strict_schema,
+        },
+    }
+
+
+def build_gemini_response_schema(schema_cls: Type[BaseModel]) -> Dict[str, Any]:
+    """Build a Gemini REST `generationConfig.responseSchema` dict without `$ref`/`$defs`."""
+    raw_schema = schema_cls.model_json_schema()
+    defs = raw_schema.get("$defs", {})
+
+    def _resolve(node: Any) -> Any:
+        if isinstance(node, list):
+            return [_resolve(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        if "$ref" in node:
+            ref_name = str(node["$ref"]).rsplit("/", 1)[-1]
+            target = defs.get(ref_name, {})
+            merged = dict(target)
+            for k, v in node.items():
+                if k != "$ref":
+                    merged[k] = v
+            return _resolve(merged)
+
+        if "anyOf" in node and isinstance(node["anyOf"], list):
+            non_null = [opt for opt in node["anyOf"] if opt != {"type": "null"}]
+            if len(non_null) == 1:
+                resolved = dict(_resolve(non_null[0]))
+                resolved["nullable"] = True
+                if "description" in node and "description" not in resolved:
+                    resolved["description"] = node["description"]
+                return resolved
+
+        out: Dict[str, Any] = {}
+        for k, v in node.items():
+            if k in ("$defs", "additionalProperties", "title", "default"):
+                continue
+            if k == "properties" and isinstance(v, dict):
+                out[k] = {pk: _resolve(pv) for pk, pv in v.items()}
+            elif k == "items":
+                out[k] = _resolve(v)
+            else:
+                out[k] = _resolve(v)
+        return out
+
+    return _resolve(raw_schema)
+
+
+def supports_ollama_structured_output(model_name: str) -> bool:
+    """Return True when the Ollama model family reliably supports schema-constrained output."""
+    if not model_name:
+        return False
+    base = model_name.strip().lower().split(":", 1)[0]
+    return any(base == prefix or base.startswith(prefix) for prefix in _OLLAMA_STRUCTURED_SCHEMA_PREFIXES)
 
 
 class BaseAgentProvider(ABC):
@@ -47,10 +156,11 @@ class BaseAgentProvider(ABC):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         temperature: float = 0.0,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentStepResult:
         """
         Request the next reasoning step from the provider.
-        May return tool calls, intermediate thought, or final content.
+        May return tool calls, intermediate thought, structured JSON, or final content.
         """
         pass
 
@@ -100,12 +210,14 @@ class MockAgentProvider(BaseAgentProvider):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         temperature: float = 0.0,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentStepResult:
         # Record invocation for test assertion
         self.call_history.append({
             "messages": messages,
             "tools": tools,
             "temperature": temperature,
+            "response_schema": response_schema.__name__ if response_schema else None,
         })
 
         if not self._steps:
@@ -217,11 +329,143 @@ class LiveAgentProvider(BaseAgentProvider):
         custom = [self._api_key] if self._api_key else []
         return self.settings.sanitize_error(redact_secrets(text, custom_secrets=custom))
 
+    def _is_native_gemini(self) -> bool:
+        """Return True when configured with Google Gemini REST (non-OpenAI-compat) endpoint."""
+        lower_url = self._base_url.lower()
+        return "generativelanguage.googleapis.com" in lower_url and "/openai" not in lower_url
+
+    async def _chat_completion_gemini(
+        self,
+        messages: List[Dict[str, Any]],
+        temperature: float,
+        response_schema: Optional[Type[BaseModel]] = None,
+    ) -> AgentStepResult:
+        """Execute non-streaming completion against native Gemini generateContent REST API."""
+        system_parts: List[str] = []
+        contents: List[Dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            text = str(msg.get("content") or "")
+            if role == "system":
+                if text:
+                    system_parts.append(text)
+            else:
+                gemini_role = "model" if role == "assistant" else "user"
+                contents.append({"role": gemini_role, "parts": [{"text": text}]})
+
+        generation_config: Dict[str, Any] = {"temperature": temperature}
+        if response_schema is not None:
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = build_gemini_response_schema(response_schema)
+
+        payload: Dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": generation_config,
+        }
+        if system_parts:
+            payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+
+        endpoint = f"{self._base_url.rstrip('/')}/models/{self._model}:generateContent"
+        headers = {
+            "x-goog-api-key": str(self._api_key),
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+                response = await client.post(endpoint, headers=headers, json=payload)
+
+                if response.status_code != 200:
+                    sanitized_err = self._sanitize(response.text)
+                    err_map = {
+                        400: ("invalid_request", f"Invalid request: HTTP 400 {sanitized_err}"),
+                        401: ("authentication_error", "Authentication failure: HTTP 401 Unauthorized"),
+                        403: ("permission_error", "Permission failure: HTTP 403 Forbidden"),
+                        429: ("rate_limit", "Rate limit exceeded: HTTP 429 Too Many Requests"),
+                    }
+                    err_type, err_msg = err_map.get(
+                        response.status_code,
+                        (
+                            "server_error" if response.status_code >= 500 else "http_error",
+                            f"HTTP error: {response.status_code}",
+                        ),
+                    )
+                    return AgentStepResult(
+                        content=f"Gemini provider error (HTTP {response.status_code}).",
+                        finish_reason="error",
+                        error=err_msg,
+                        error_type=err_type,
+                        status_code=response.status_code,
+                    )
+
+                data = response.json()
+                candidates = data.get("candidates")
+                if not isinstance(candidates, list) or not candidates:
+                    raise ValueError("Gemini response missing non-empty 'candidates' array.")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text_out = "".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip() or None
+
+                usage_meta = data.get("usageMetadata") or {}
+                p_tok = usage_meta.get("promptTokenCount")
+                c_tok = usage_meta.get("candidatesTokenCount")
+                t_tok = usage_meta.get("totalTokenCount")
+                step_usage: Optional[TokenUsage] = None
+                if p_tok is not None:
+                    cost_breakdown = default_cost_calculator.calculate_cost(
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok or 0,
+                        model=self._model,
+                    )
+                    step_usage = TokenUsage(
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=t_tok,
+                        model=self._model,
+                        provider="gemini",
+                        usage_source=UsageSource.ACTUAL_PROVIDER,
+                        estimated_cost_usd=cost_breakdown.total_cost if cost_breakdown.is_pricing_known else None,
+                        pricing_version=cost_breakdown.pricing_version if cost_breakdown.is_pricing_known else None,
+                        is_estimated_cost_known=cost_breakdown.is_pricing_known,
+                    )
+
+                return AgentStepResult(
+                    content=text_out,
+                    tool_calls=[],
+                    finish_reason="stop",
+                    usage=step_usage,
+                    model=self._model,
+                )
+        except httpx.TimeoutException as exc:
+            sanitized_exc = self._sanitize(str(exc))
+            return AgentStepResult(
+                content=f"AI provider request timed out after {self._timeout}s.",
+                finish_reason="error",
+                error=f"Request timeout: exceeded {self._timeout}s ({sanitized_exc})",
+                error_type="timeout",
+            )
+        except httpx.ConnectError as exc:
+            sanitized_exc = self._sanitize(str(exc))
+            return AgentStepResult(
+                content="Could not connect to AI reasoning provider.",
+                finish_reason="error",
+                error=f"Connection failure: {sanitized_exc}",
+                error_type="connection_error",
+            )
+        except Exception as exc:
+            sanitized_exc = self._sanitize(str(exc))
+            return AgentStepResult(
+                content=f"AI provider request failed: {sanitized_exc}",
+                finish_reason="error",
+                error=f"Unexpected provider error: {sanitized_exc}",
+                error_type="unexpected_error",
+            )
+
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         temperature: float = 0.0,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentStepResult:
         if not self._api_key or not str(self._api_key).strip():
             logger.info("LiveAgentProvider: No API key configured. Returning unavailable status.")
@@ -231,6 +475,13 @@ class LiveAgentProvider(BaseAgentProvider):
                 finish_reason="unavailable",
                 error="AI provider API key is not configured.",
                 error_type="provider_unavailable",
+            )
+
+        if self._is_native_gemini() and not tools:
+            return await self._chat_completion_gemini(
+                messages=messages,
+                temperature=temperature,
+                response_schema=response_schema,
             )
 
         headers = {
@@ -247,6 +498,9 @@ class LiveAgentProvider(BaseAgentProvider):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+
+        if response_schema is not None:
+            payload["response_format"] = build_openai_response_format(response_schema)
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
@@ -846,6 +1100,7 @@ class OllamaAgentProvider(BaseAgentProvider):
         base_url: Optional[str] = None,
         timeout: Optional[float] = None,
         transport: Optional[httpx.AsyncBaseTransport] = None,
+        supports_structured_outputs: Optional[bool] = None,
     ):
         self.settings = get_settings()
         self._model = model or getattr(self.settings, "ollama_model", "qwen3:4b")
@@ -854,6 +1109,13 @@ class OllamaAgentProvider(BaseAgentProvider):
         self._timeout = timeout or getattr(self.settings, "ollama_timeout", 75.0)
         self._num_predict = getattr(self.settings, "ollama_num_predict", 512)
         self._transport = transport
+        self._supports_structured_outputs = supports_structured_outputs
+
+    def _supports_structured_output(self) -> bool:
+        """Determine whether this Ollama model instance should receive schema-constrained format."""
+        if self._supports_structured_outputs is not None:
+            return bool(self._supports_structured_outputs)
+        return supports_ollama_structured_output(self._model)
 
     @property
     def model(self) -> str:
@@ -922,6 +1184,7 @@ class OllamaAgentProvider(BaseAgentProvider):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         temperature: float = 0.0,
+        response_schema: Optional[Type[BaseModel]] = None,
     ) -> AgentStepResult:
         """Execute a non-streaming chat completion request against Ollama /api/chat."""
         payload: Dict[str, Any] = {
@@ -938,11 +1201,25 @@ class OllamaAgentProvider(BaseAgentProvider):
         if tools:
             payload["tools"] = tools
 
+        use_structured_format = response_schema is not None and self._supports_structured_output()
+        if use_structured_format:
+            payload["format"] = build_openai_response_format(response_schema)["json_schema"]["schema"]
+
         endpoint = f"{self._base_url}/api/chat"
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
                 response = await client.post(endpoint, json=payload)
+
+                # Graceful fallback if model/server rejects structured format schema with 400
+                if response.status_code == 400 and use_structured_format:
+                    logger.info(
+                        "Ollama rejected schema format for model '%s'; retrying without 'format' parameter.",
+                        self._model,
+                    )
+                    fallback_payload = dict(payload)
+                    fallback_payload.pop("format", None)
+                    response = await client.post(endpoint, json=fallback_payload)
 
                 if response.status_code == 404:
                     sanitized_err = self._sanitize(response.text)
@@ -1052,7 +1329,8 @@ class OllamaAgentProvider(BaseAgentProvider):
                 is_estimated_cost_known=False,
             )
 
-        finish_reason = "tool_calls" if parsed_tcs else "stop"
+        done_reason = data.get("done_reason")
+        finish_reason = "tool_calls" if parsed_tcs else (done_reason if done_reason else "stop")
 
         return AgentStepResult(
             content=clean_content,
@@ -1134,6 +1412,7 @@ class OllamaAgentProvider(BaseAgentProvider):
                     accumulated_tool_calls: List[ToolCall] = []
                     prompt_eval_count = None
                     eval_count = None
+                    done_reason = None
                     model_name = self._model
                     stream_interrupted = False
                     think_filter = ThinkTagFilter()
@@ -1177,6 +1456,7 @@ class OllamaAgentProvider(BaseAgentProvider):
                             if chunk.get("done") is True:
                                 prompt_eval_count = chunk.get("prompt_eval_count")
                                 eval_count = chunk.get("eval_count")
+                                done_reason = chunk.get("done_reason")
                                 break
 
                     except (httpx.RequestError, httpx.HTTPError, asyncio.CancelledError) as exc:
@@ -1220,7 +1500,11 @@ class OllamaAgentProvider(BaseAgentProvider):
                             is_estimated_cost_known=False,
                         )
 
-                    finish_reason = "interrupted" if stream_interrupted else ("tool_calls" if accumulated_tool_calls else "stop")
+                    finish_reason = (
+                        "interrupted" if stream_interrupted
+                        else ("tool_calls" if accumulated_tool_calls
+                        else (done_reason if done_reason else "stop"))
+                    )
                     final_content = self._clean_content("".join(accumulated_content)) if accumulated_content else None
 
                     yield AgentStepResult(

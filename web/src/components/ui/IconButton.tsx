@@ -39,7 +39,7 @@ export const IconButton = React.forwardRef<HTMLButtonElement, IconButtonProps>(
     };
 
     const sizes = {
-      sm: 'w-7 h-7 rounded-sm text-xs',
+      sm: 'w-9 h-9 sm:w-7 sm:h-7 rounded-sm text-xs',
       md: 'w-9 h-9 rounded-md text-sm',
       lg: 'w-10 h-10 rounded-md text-base',
     };

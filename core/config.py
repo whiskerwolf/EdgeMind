@@ -166,10 +166,55 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = Field(default=7, description="Refresh token expiration in days (~7 days)")
     jwt_issuer: str = Field(default="edgemind-api", description="Expected JWT issuer claim (iss)")
     jwt_audience: str = Field(default="edgemind-client", description="Expected JWT audience claim (aud)")
+    refresh_token_cleanup_grace_days: int = Field(
+        default=1,
+        ge=0,
+        validation_alias=AliasChoices(
+            "refresh_token_cleanup_grace_days",
+            "token_cleanup_grace_days",
+            "REFRESH_TOKEN_CLEANUP_GRACE_DAYS",
+            "TOKEN_CLEANUP_GRACE_DAYS",
+        ),
+        description="Grace period in days after refresh token expiration before automated database pruning",
+    )
+    refresh_token_revoked_grace_days: int = Field(
+        default=7,
+        ge=0,
+        validation_alias=AliasChoices(
+            "refresh_token_revoked_grace_days",
+            "token_cleanup_revoked_grace_days",
+            "REFRESH_TOKEN_REVOKED_GRACE_DAYS",
+            "TOKEN_CLEANUP_REVOKED_GRACE_DAYS",
+        ),
+        description="Retention window in days for revoked refresh tokens before automated pruning (preserves token reuse detection)",
+    )
 
     # Administrator Bootstrap (Phase 3)
     admin_bootstrap_email: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin email")
     admin_bootstrap_password: Optional[str] = Field(default=None, description="Optional environment-provided bootstrap admin password")
+
+    # OAuth 2.0 Authentication (Google)
+    oauth_google_client_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("oauth_google_client_id", "OAUTH_GOOGLE_CLIENT_ID"),
+        description="Google OAuth 2.0 client ID",
+    )
+    oauth_google_client_secret: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("oauth_google_client_secret", "OAUTH_GOOGLE_CLIENT_SECRET"),
+        description="Google OAuth 2.0 client secret",
+    )
+    oauth_google_redirect_uri: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("oauth_google_redirect_uri", "OAUTH_GOOGLE_REDIRECT_URI"),
+        description="Google OAuth 2.0 registered callback redirect URI",
+    )
+    oauth_state_ttl_seconds: int = Field(
+        default=600,
+        ge=60,
+        le=3600,
+        description="Time-to-live in seconds for single-use OAuth CSRF state tokens",
+    )
 
     # Redis & Distributed Caching (Phase 4)
     redis_url: Optional[str] = Field(
@@ -330,11 +375,12 @@ class Settings(BaseSettings):
             self.gemini_api_key,
             self.openai_api_key,
             self.admin_bootstrap_password,
+            self.oauth_google_client_secret,
             self.redis_password,
             self.redis_rate_limit_password,
         ]
         from urllib.parse import urlparse
-        for url_val in [self.redis_url, self.redis_rate_limit_url]:
+        for url_val in [self.database_url, self.redis_url, self.redis_rate_limit_url]:
             if url_val and "@" in url_val:
                 try:
                     parsed = urlparse(url_val)

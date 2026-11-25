@@ -519,3 +519,38 @@ def test_diversity_penalty_bounding_and_auditability():
     assert "Redundant Partition Penalty (-15.0)" in ranked[1].explanation
     assert "Redundant Partition Penalty (-30.0)" in ranked[2].explanation
 
+
+def test_rank_and_select_with_raw_dict_gaps():
+    """Verify CandidateRanker handles raw dictionaries in gaps without AttributeError."""
+    c1 = make_candidate("c1", GapCategory.EMPTY_COLLECTION, {"nums": []}, param_name="nums")
+    c2 = make_candidate("c2", GapCategory.NEGATIVE_VALUES, {"nums": [-1]}, param_name="nums")
+
+    raw_gaps = [
+        {
+            "category": "EMPTY_COLLECTION",
+            "param_name": "nums",
+            "severity": "HIGH",
+            "constraint_validity": "VALID",
+            "relevance_score": 0.9,
+            "rationale": "Test empty collection boundary",
+        },
+        {
+            "category": "NEGATIVE_VALUES",
+            "param_name": "nums",
+            "severity": "MEDIUM",
+            "constraint_validity": "VALID",
+        },
+        {
+            "target_gap": "SINGLETON",
+            "parameter": "nums",
+            "severity": "LOW",
+        },
+    ]
+
+    ranker = CandidateRanker()
+    result = ranker.rank_and_select([c1, c2], gaps=raw_gaps)
+    assert len(result.selected_candidates) == 2
+    assert len(result.ranked_candidates) == 2
+    assert result.ranked_candidates[0].score_breakdown.severity_score == 30.0
+
+

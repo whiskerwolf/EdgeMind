@@ -5,6 +5,7 @@ import { StatusBarManager } from './ui/statusBar';
 import { analyzeCurrentFile } from './commands/analyzeCurrentFile';
 import { analyzeSelection } from './commands/analyzeSelection';
 import { clearDiagnostics } from './commands/clearDiagnostics';
+import { ResultsPanel } from './ui/results/resultsPanel';
 import {
   CONFIG_SECTION,
   CONFIG_BACKEND_URL,
@@ -100,14 +101,25 @@ export function activate(context: vscode.ExtensionContext): void {
   // Command: edgemind.analyzeCurrentFile
   const analyzeCurrentFileCommand = vscode.commands.registerCommand(
     'edgemind.analyzeCurrentFile',
-    () => analyzeCurrentFile(apiClient, logger, diagnosticCollection)
+    () => analyzeCurrentFile(apiClient, logger, diagnosticCollection, context.extensionUri)
   );
 
   // Command: edgemind.analyzeSelection
   const analyzeSelectionCommand = vscode.commands.registerCommand(
     'edgemind.analyzeSelection',
-    () => analyzeSelection(apiClient, logger, diagnosticCollection)
+    () => analyzeSelection(apiClient, logger, diagnosticCollection, context.extensionUri)
   );
+
+  // Command: edgemind.showResults
+  const showResultsCommand = vscode.commands.registerCommand('edgemind.showResults', () => {
+    if (ResultsPanel.currentPanel) {
+      ResultsPanel.currentPanel.reveal();
+      logger.info('Revealed existing EdgeMind Results Panel.');
+    } else {
+      logger.info('Show Results command invoked without active panel; triggering current file analysis.');
+      analyzeCurrentFile(apiClient, logger, diagnosticCollection, context.extensionUri);
+    }
+  });
 
   // Command: edgemind.clearDiagnostics
   const clearDiagnosticsCommand = vscode.commands.registerCommand(
@@ -177,6 +189,7 @@ export function activate(context: vscode.ExtensionContext): void {
     checkBackendCommand,
     analyzeCurrentFileCommand,
     analyzeSelectionCommand,
+    showResultsCommand,
     clearDiagnosticsCommand,
     diagnosticCollection,
     closeDocListener,

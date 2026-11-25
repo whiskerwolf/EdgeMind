@@ -10,14 +10,15 @@ Defines typed schemas for FastAPI endpoints:
 - /api/v1/analyses
 """
 
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 from core.sanitization import (
     MAX_CONSTRAINTS_COUNT,
     MAX_CONSTRAINT_ITEM_CHARS,
     MAX_PROBLEM_DESCRIPTION_CHARS,
     MAX_TITLE_CHARS,
+    normalize_unicode,
     sanitize_problem_context_dict,
     sanitize_recursive_value,
     sanitize_text,
@@ -58,8 +59,12 @@ class AnalyzeCodeRequest(BaseModel):
     """Schema for POST /api/v1/analyze request body."""
     model_config = ConfigDict(extra="ignore")
 
-    code: str = Field(..., description="Python source code to analyze statically")
+    code: str = Field(..., description="Python or JavaScript source code to analyze statically")
     filename: Optional[str] = Field(default="snippet.py", description="Display filename label")
+    language: Optional[str] = Field(
+        default=None,
+        description="Optional source language ('python' or 'javascript'; inferred from filename when omitted)",
+    )
     static_only: Optional[bool] = Field(default=True, description="Enforce static-only analysis")
 
     @field_validator("code")
@@ -73,6 +78,20 @@ class AnalyzeCodeRequest(BaseModel):
         if v is not None:
             return validate_filename_label(v)
         return v
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not str(v).strip():
+            return None
+        cleaned = str(v).strip().lower()
+        if cleaned == "js":
+            cleaned = "javascript"
+        elif cleaned == "py":
+            cleaned = "python"
+        if cleaned not in ("python", "javascript"):
+            raise ValueError(f"Unsupported language '{v}': expected 'python' or 'javascript'.")
+        return cleaned
 
 
 class ProblemContextSchema(BaseModel):
@@ -332,3 +351,258 @@ class AnalysisReportItemResponse(AnalysisSessionResponse):
     problem_title: Optional[str] = Field(default=None, description="Joined problem title")
     problem_slug: Optional[str] = Field(default=None, description="Joined problem slug")
     platform: Optional[str] = Field(default=None, description="Joined problem platform")
+
+
+# -----------------------------------------------------------------------------
+# Finding AI Diagnosis Schemas (Phase 5G)
+# -----------------------------------------------------------------------------
+
+MAX_DIAGNOSIS_CODE_CONTEXT_BYTES: int = 16 * 1024  # 16 KiB (~400 lines)
+StructuredSeverity = Literal["error", "warning", "info"]
+
+
+def _normalize_finding_severity(v: Any) -> str:
+    """Validate and normalize finding severity labels across request and output schemas."""
+    if not isinstance(v, str):
+        raise ValueError("Severity must be a string.")
+    cleaned = v.strip().lower()
+    if cleaned not in ("error", "warning", "info"):
+        raise ValueError(f"Invalid severity '{v}': must be one of 'error', 'warning', 'info'.")
+    return cleaned
+
+
+def _clean_non_empty_text(v: Any, field_label: str = "Field") -> str:
+    """Reject non-strings, null bytes, and empty/whitespace-only text."""
+    if not isinstance(v, str):
+        raise ValueError(f"{field_label} must be a string.")
+    safe = normalize_unicode(strip_null_bytes(v)).strip()
+    if not safe:
+        raise ValueError(f"{field_label} must not be empty or whitespace-only.")
+    return safe
+
+
+def _clean_optional_text(v: Any) -> Optional[str]:
+    """Normalize optional string fields, returning None when blank."""
+    if v is None:
+        return None
+    if not isinstance(v, str):
+        raise ValueError("Optional text field must be a string.")
+    safe = normalize_unicode(strip_null_bytes(v)).strip()
+    return safe if safe else None
+
+
+class FindingPayload(BaseModel):
+    """Schema for individual static analysis finding sent for AI diagnosis."""
+    model_config = ConfigDict(extra="ignore")
+
+    finding_id: str = Field(..., min_length=1, max_length=64, description="Unique identifier of the finding")
+    type: str = Field(..., min_length=1, max_length=128, description="Finding category or detector rule")
+    severity: str = Field(..., description="Severity level: error, warning, info")
+    message: str = Field(..., min_length=1, max_length=1000, description="Short descriptive finding message")
+    line: Optional[int] = Field(default=None, ge=1, description="1-based source line number (None for module-level)")
+    static_why: Optional[str] = Field(default=None, max_length=1000, description="Pre-computed static explanation")
+    static_fix: Optional[str] = Field(default=None, max_length=1000, description="Pre-computed static fix recommendation")
+
+    @field_validator("severity")
+    @classmethod
+    def validate_severity(cls, v: str) -> str:
+        return _normalize_finding_severity(v)
+
+    @field_validator("finding_id", "type", "message")
+    @classmethod
+    def validate_required_string_fields(cls, v: str) -> str:
+        return _clean_non_empty_text(v)
+
+    @field_validator("static_why", "static_fix")
+    @classmethod
+    def validate_optional_string_fields(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_optional_text(v)
+
+
+class DiagnoseFindingRequest(BaseModel):
+    """Schema for POST /api/v1/diagnose/stream request body."""
+    model_config = ConfigDict(extra="ignore")
+
+    finding: FindingPayload = Field(..., description="Static analysis finding to diagnose")
+    code_context: str = Field(..., description="Bounded Python code snippet around the finding")
+    context_start_line: int = Field(default=1, ge=1, description="1-based starting line of context snippet")
+    context_end_line: int = Field(default=1, ge=1, description="1-based ending line of context snippet")
+    filename: Optional[str] = Field(default="snippet.py", description="Display filename label")
+    language: Optional[str] = Field(default="python", description="Language of snippet (must be python)")
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or not v.strip():
+            return "snippet.py"
+        return validate_filename_label(v)
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, v: Optional[str]) -> str:
+        if v is None or not str(v).strip():
+            return "python"
+        cleaned = str(v).strip().lower()
+        if cleaned != "python":
+            raise ValueError(f"Unsupported language '{v}'. Only 'python' is currently supported.")
+        return cleaned
+
+    @field_validator("code_context")
+    @classmethod
+    def validate_code_context(cls, v: str) -> str:
+        return validate_source_code(v, max_bytes=MAX_DIAGNOSIS_CODE_CONTEXT_BYTES)
+
+    @model_validator(mode="after")
+    def validate_context_and_lines(self) -> "DiagnoseFindingRequest":
+        if self.context_end_line < self.context_start_line:
+            raise ValueError(
+                f"context_end_line ({self.context_end_line}) cannot be less than "
+                f"context_start_line ({self.context_start_line})."
+            )
+        if self.finding.line is not None:
+            if not (self.context_start_line <= self.finding.line <= self.context_end_line):
+                raise ValueError(
+                    f"Finding line {self.finding.line} must be within the provided "
+                    f"context range [{self.context_start_line}, {self.context_end_line}]."
+                )
+        return self
+
+
+class CodeLocation(BaseModel):
+    """Relevant source code location referenced by a structured diagnosis."""
+    model_config = ConfigDict(extra="forbid")
+
+    file: Optional[str] = Field(default=None, max_length=255, description="Filename label")
+    start_line: int = Field(..., ge=1, description="1-based starting line number")
+    end_line: Optional[int] = Field(default=None, ge=1, description="Optional 1-based ending line number")
+    symbol: Optional[str] = Field(default=None, max_length=128, description="Optional enclosing function or class name")
+
+    @field_validator("file")
+    @classmethod
+    def validate_location_file(cls, v: Optional[str]) -> Optional[str]:
+        cleaned = _clean_optional_text(v)
+        return validate_filename_label(cleaned) if cleaned else None
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_optional_text(v)
+
+    @model_validator(mode="after")
+    def validate_line_bounds(self) -> "CodeLocation":
+        if self.end_line is not None and self.end_line < self.start_line:
+            raise ValueError(f"end_line ({self.end_line}) cannot be less than start_line ({self.start_line}).")
+        return self
+
+
+class DiagnosisFindingItem(BaseModel):
+    """Individual validated finding detail within a structured AI diagnosis."""
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(..., min_length=1, max_length=300, description="Concise title of the identified issue")
+    severity: StructuredSeverity = Field(..., description="Severity level: error, warning, or info")
+    explanation: str = Field(..., min_length=1, max_length=4000, description="Detailed diagnosis explanation")
+    recommendation: str = Field(..., min_length=1, max_length=4000, description="Actionable remediation guidance")
+    locations: List[CodeLocation] = Field(default_factory=list, description="Relevant code locations")
+    related_finding_id: Optional[str] = Field(default=None, max_length=64, description="Matching static finding ID")
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_item_severity(cls, v: Any) -> str:
+        return _normalize_finding_severity(v)
+
+    @field_validator("title", "explanation", "recommendation")
+    @classmethod
+    def clean_required_fields(cls, v: str) -> str:
+        return _clean_non_empty_text(v)
+
+    @field_validator("related_finding_id")
+    @classmethod
+    def clean_related_id(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_optional_text(v)
+
+
+class StructuredDiagnosisOutput(BaseModel):
+    """
+    Strictly validated Pydantic schema for structured AI finding diagnosis outputs.
+
+    Note: `confidence` is optional and defaults to `None`; confidence scores are never
+    fabricated when not genuinely supplied by the reasoning output.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(..., min_length=1, max_length=2000, description="Concise summary of the diagnosis")
+    root_cause: str = Field(..., min_length=1, max_length=4000, description="Primary root cause statement")
+    explanation: str = Field(..., min_length=1, max_length=6000, description="Technical explanation of why this occurs")
+    severity: StructuredSeverity = Field(..., description="Assessed severity: error, warning, or info")
+    findings: List[DiagnosisFindingItem] = Field(..., min_length=1, description="Validated finding breakdown entries")
+    recommendations: List[str] = Field(..., min_length=1, description="Ordered actionable remediation steps")
+    code_locations: List[CodeLocation] = Field(default_factory=list, description="Relevant code spans")
+    confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional self-reported model confidence [0.0, 1.0]; None when omitted",
+    )
+    example_fix: Optional[str] = Field(default=None, max_length=8000, description="Corrected Python code example")
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_root_severity(cls, v: Any) -> str:
+        return _normalize_finding_severity(v)
+
+    @field_validator("summary", "root_cause", "explanation")
+    @classmethod
+    def clean_root_text(cls, v: str) -> str:
+        return _clean_non_empty_text(v)
+
+    @field_validator("recommendations")
+    @classmethod
+    def clean_recommendations(cls, v: List[str]) -> List[str]:
+        if not isinstance(v, list):
+            raise ValueError("recommendations must be a list of non-empty strings.")
+        cleaned = [_clean_non_empty_text(item, "Recommendation") for item in v]
+        if not cleaned:
+            raise ValueError("recommendations must include at least one non-empty item.")
+        return cleaned
+
+    @field_validator("example_fix")
+    @classmethod
+    def clean_example_fix(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_optional_text(v)
+
+
+class DiagnosisExecutionResult(BaseModel):
+    """
+    Diagnosis pipeline outcome uniting validated structured output, fallback status,
+    rendered user-facing Markdown, and usage metadata without breaking existing UIs.
+    """
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    finding_id: str
+    status: Literal["structured", "fallback_markdown", "fallback_static", "unavailable", "error"]
+    structured: Optional[StructuredDiagnosisOutput] = None
+    markdown: str = ""
+    used_fallback: bool = False
+    validation_error: Optional[str] = None
+    provider: str = "unknown"
+    model: Optional[str] = None
+    usage: Optional[Any] = None
+
+    def to_report_payload(self) -> Dict[str, Any]:
+        """Convert outcome into report-compatible metadata for downstream persistence."""
+        payload: Dict[str, Any] = {
+            "finding_id": self.finding_id,
+            "status": self.status,
+            "used_fallback": self.used_fallback,
+            "markdown": self.markdown,
+            "provider": self.provider,
+            "model": self.model,
+        }
+        if self.validation_error:
+            payload["validation_error"] = self.validation_error
+        if self.structured is not None:
+            payload["structured"] = self.structured.model_dump(mode="json")
+        return payload
+
+

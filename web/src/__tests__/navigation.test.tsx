@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
 import { AppRoutes } from '../routes/AppRoutes';
@@ -7,10 +7,12 @@ import { apiClient } from '../api/client';
 
 describe('AppShell & Routing Integration', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.spyOn(apiClient, 'getHealth').mockResolvedValue({
       status: 'healthy',
       service: 'EdgeMind',
     });
+    vi.spyOn(apiClient, 'getRecentAnalyses').mockResolvedValue([]);
   });
 
   it('renders Overview route by default', async () => {
@@ -23,7 +25,7 @@ describe('AppShell & Routing Integration', () => {
     );
 
     expect(await screen.findByRole('heading', { level: 2, name: 'Overview' })).toBeDefined();
-    expect(screen.getByText('EdgeMind')).toBeDefined();
+    expect(within(screen.getByRole('navigation')).getByText('EdgeMind')).toBeDefined();
   });
 
   it('navigates to Workspace route', async () => {
@@ -48,6 +50,20 @@ describe('AppShell & Routing Integration', () => {
     );
 
     expect(await screen.findByRole('heading', { level: 2, name: 'Findings Explorer' })).toBeDefined();
+  });
+
+  it('navigates to Settings route', async () => {
+    render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <AppShell>
+          <AppRoutes />
+        </AppShell>
+      </MemoryRouter>
+    );
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: /Settings & Configuration/i })
+    ).toBeDefined();
   });
 
   it('renders NotFoundPage on unknown route', async () => {

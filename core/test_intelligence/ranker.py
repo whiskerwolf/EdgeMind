@@ -9,7 +9,7 @@ Enforces semantic deduplication, candidate ceilings, provenance integrity, and i
 
 import copy
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from core.test_intelligence.gap_detector import (
     CoverageGap,
@@ -157,11 +157,61 @@ class CandidateRanker:
         self.default_max_selected = default_max_selected
         self.weights = weights or RankingWeights()
 
+    @staticmethod
+    def _coerce_coverage_gap(g: Any) -> Optional[CoverageGap]:
+        """Safely coerce a CoverageGap instance, dict, or object to CoverageGap."""
+        if isinstance(g, CoverageGap):
+            return g
+        if isinstance(g, dict):
+            try:
+                return CoverageGap.from_dict(g)
+            except Exception:
+                p = g.get("param_name") or g.get("parameter")
+                cat_raw = g.get("category") or g.get("target_gap") or g.get("gap_type") or g.get("name")
+                cat = None
+                if isinstance(cat_raw, GapCategory):
+                    cat = cat_raw
+                elif isinstance(cat_raw, str):
+                    try:
+                        cat = GapCategory(cat_raw)
+                    except ValueError:
+                        cat = None
+                sev_raw = g.get("severity")
+                sev = None
+                if isinstance(sev_raw, GapSeverity):
+                    sev = sev_raw
+                elif isinstance(sev_raw, str):
+                    try:
+                        sev = GapSeverity(sev_raw.upper())
+                    except ValueError:
+                        sev = GapSeverity.MEDIUM
+                else:
+                    sev = GapSeverity.MEDIUM
+                if cat is not None:
+                    return CoverageGap(category=cat, param_name=p, severity=sev)
+        elif hasattr(g, "category"):
+            cat = getattr(g, "category")
+            p = getattr(g, "param_name", None)
+            sev = getattr(g, "severity", GapSeverity.MEDIUM)
+            if isinstance(cat, str):
+                try:
+                    cat = GapCategory(cat)
+                except ValueError:
+                    cat = None
+            if isinstance(sev, str):
+                try:
+                    sev = GapSeverity(sev.upper())
+                except ValueError:
+                    sev = GapSeverity.MEDIUM
+            if isinstance(cat, GapCategory):
+                return CoverageGap(category=cat, param_name=p, severity=sev)
+        return None
+
     def rank_and_select(
         self,
         candidates: List[TestCase],
         existing_tests: Optional[List[TestCase]] = None,
-        gaps: Optional[List[CoverageGap]] = None,
+        gaps: Optional[List[Union[CoverageGap, Dict[str, Any]]]] = None,
         max_selected: Optional[int] = None,
     ) -> CandidateRankingResult:
         """
@@ -247,7 +297,9 @@ class CandidateRanker:
         gap_map: Dict[Tuple[Optional[str], GapCategory], CoverageGap] = {}
         if gaps:
             for g in gaps:
-                gap_map[(g.param_name, g.category)] = g
+                cg = self._coerce_coverage_gap(g)
+                if cg is not None:
+                    gap_map[(cg.param_name, cg.category)] = cg
 
         # 5. Iterative Diversity-Aware Selection (Marginal Utility)
         # Select candidates one by one. In each step, the candidate that provides

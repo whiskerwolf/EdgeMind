@@ -45,7 +45,7 @@ echo "Configuration validation passed: required production secrets are configure
 
 # Step 3: Build and verify container images on ARM64
 echo "Building / pulling production containers defined in ${COMPOSE_FILE}..."
-docker compose -f "${COMPOSE_FILE}" build backend
+docker compose -f "${COMPOSE_FILE}" build backend caddy
 
 # Step 4: Launch data stores and wait for health
 echo "Starting PostgreSQL pgvector and Redis services..."

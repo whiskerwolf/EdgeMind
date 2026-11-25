@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from core.analyzer import AnalysisResultList, deduplicate_results
 from core.complexity import check_complexity
+from core.js_hoisting import check_js_hoisting, is_javascript_filename
 from core.json_reporter import create_report_dict
 from core.logic import check_logic
 from core.quality import check_quality
@@ -56,16 +57,19 @@ def analyze_code(
     code: str,
     filename: str = DEFAULT_FILENAME,
     static_only: bool = True,
+    language: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Analyze Python source code provided as an in-memory string.
+    Analyze Python or JavaScript source code provided as an in-memory string.
 
     Parameters:
-        code: Python source code string to analyze.
+        code: Source code string to analyze.
         filename: Optional display label for reporting (defaults to "snippet.py").
                   Validated strictly as a label, never as a filesystem path.
         static_only: Must be True. The service strictly performs static analysis
                      and does not execute submitted code.
+        language: Optional explicit language ('python' or 'javascript'); inferred
+                  from filename extension when omitted.
 
     Returns:
         A standardized AnalysisReport dictionary suitable for JSON serialization.
@@ -74,7 +78,7 @@ def analyze_code(
         TypeError: If code or filename is not a string.
         ValueError: If code is empty/whitespace-only, exceeds MAX_SOURCE_SIZE,
                     filename contains path traversal or invalid characters,
-                    or static_only is False.
+                    language is unsupported, or static_only is False.
     """
     # 1. Enforce static-only mode
     if static_only is not True:
@@ -100,10 +104,37 @@ def analyze_code(
             f"the maximum allowed limit of {MAX_SOURCE_SIZE} bytes (64 KiB)."
         )
 
-    # 3. Validate filename as a display label
+    # 3. Validate filename as a display label and resolve target language
     display_name = validate_filename(filename)
 
-    # 4. Perform syntax validation without executing source code
+    normalized_lang: Optional[str] = None
+    if language is not None:
+        normalized_lang = str(language).strip().lower()
+        if normalized_lang == "js":
+            normalized_lang = "javascript"
+        elif normalized_lang == "py":
+            normalized_lang = "python"
+        if normalized_lang not in ("python", "javascript"):
+            raise ValueError(
+                f"Unsupported language '{language}': supported languages are 'python' and 'javascript'."
+            )
+
+    use_javascript = (
+        normalized_lang == "javascript"
+        if normalized_lang is not None
+        else is_javascript_filename(display_name)
+    )
+
+    if use_javascript:
+        js_results = AnalysisResultList(check_js_hoisting(code), static_only=True)
+        deduped_js = deduplicate_results(js_results, static_only=True)
+        return create_report_dict(
+            filename=display_name,
+            results=deduped_js,
+            static_only=True,
+        )
+
+    # 4. Perform Python syntax validation without executing source code
     try:
         compile(code, display_name, "exec")
     except SyntaxError as error:
@@ -218,19 +249,123 @@ def parse_test_cases(raw_cases: Any) -> List[Any]:
                 tc.id = f"test_{idx + 1}"
             parsed_cases.append(tc)
         else:
-            # Raw parameter mapping, e.g. {"nums": [1, 2, 3]}
+            # Raw parameter mapping, e.g. {"nums": [1, 2, 3]} or {"raw_stdin": "..."}
+            raw_stdin = item_copy.pop("raw_stdin", None)
             tc = TestCase(
                 id=f"test_{idx + 1}",
                 source=TestCaseSource.USER_PROVIDED_TEST,
-                input_data=dict(item),
+                input_data=dict(item_copy),
                 expected_output=None,
                 is_expected_output_verified=False,
                 label=f"User Test {idx + 1}",
                 rationale="Supplied as input test sample.",
+                raw_stdin=raw_stdin,
             )
             parsed_cases.append(tc)
 
     return parsed_cases
+
+
+def normalize_test_cases_for_signature(
+    test_cases: List[Any],
+    code: str,
+    problem_context: Optional[Any] = None,
+) -> List[Any]:
+    """
+    Normalize test cases to strictly match function-level parameter representation:
+    - Preserve raw STDIN separately on TestCase.raw_stdin.
+    - Parse array length correctly from STDIN or metadata.
+    - Map actual function parameters from code AST signature (e.g. ['ar']).
+    - Do not treat input-format metadata (e.g. 'n', 'm', 'k') as function parameters when
+      they represent collection length/size metadata.
+    - Ensure candidate inputs and existing test cases contain only actual function parameters.
+    """
+    from core.test_intelligence.context_intelligence import _extract_ast_signature
+
+    if not test_cases:
+        return test_cases
+
+    ast_info = _extract_ast_signature(code) if code else {}
+    ast_params = list(ast_info.get("parameters") or [])
+
+    # If code defines function params, update problem_context.parameters
+    if ast_params and problem_context is not None:
+        if hasattr(problem_context, "parameters"):
+            problem_context.parameters = ast_params
+        elif isinstance(problem_context, dict) and "parameters" in problem_context:
+            problem_context["parameters"] = ast_params
+
+    # If code does not define function params, fall back to problem_context.parameters
+    if not ast_params and problem_context and getattr(problem_context, "parameters", None):
+        ast_params = list(problem_context.parameters)
+
+    for tc in test_cases:
+        if not hasattr(tc, "input_data") or not isinstance(tc.input_data, dict):
+            continue
+
+        keys = list(tc.input_data.keys())
+
+        # Check for case: {"n": "6\n1 2 3 4 10 11", "ar": [1, 2, 3, 4, 10, 11]}
+        # Or {"n": 6, "ar": [1, 2, 3, 4, 10, 11]}
+        if ast_params:
+            for k in keys:
+                if k not in ast_params:
+                    val = tc.input_data[k]
+                    # Check if val is raw STDIN string
+                    if isinstance(val, str) and ("\n" in val or any(c.isdigit() for c in val)):
+                        if not tc.raw_stdin:
+                            tc.raw_stdin = val.strip()
+                        tc.input_data.pop(k, None)
+                    # Check if val is length count matching a collection parameter in ast_params
+                    elif isinstance(val, (int, float)):
+                        matched_coll = False
+                        for p in ast_params:
+                            if p in tc.input_data and isinstance(tc.input_data[p], (list, tuple)):
+                                if len(tc.input_data[p]) == int(val):
+                                    if not tc.raw_stdin:
+                                        tc.raw_stdin = f"{int(val)}\n{' '.join(str(x) for x in tc.input_data[p])}"
+                                    tc.input_data.pop(k, None)
+                                    matched_coll = True
+                                    break
+                        if not matched_coll and k.lower() in ("n", "m", "length", "count", "size"):
+                            tc.input_data.pop(k, None)
+                    # Remove non-AST input format metadata
+                    elif k.lower() in ("n", "m", "length", "count", "size") and any(
+                        p in tc.input_data for p in ast_params
+                    ):
+                        tc.input_data.pop(k, None)
+
+        # If raw_stdin is present but input_data is empty or missing ast_params
+        if getattr(tc, "raw_stdin", None) and ast_params:
+            for p in ast_params:
+                if p not in tc.input_data:
+                    lines = [l.strip() for l in tc.raw_stdin.strip().split("\n") if l.strip()]
+                    if len(lines) >= 2:
+                        # Line 1: length, Line 2: array elements
+                        try:
+                            items = [int(x) if x.lstrip("-").isdigit() else float(x) for x in lines[1].split()]
+                            tc.input_data[p] = items
+                        except Exception:
+                            pass
+                    elif len(lines) == 1:
+                        # Single line: e.g. "4"
+                        line = lines[0]
+                        try:
+                            if line.lstrip("-").isdigit():
+                                tc.input_data[p] = int(line)
+                            else:
+                                tc.input_data[p] = line
+                        except Exception:
+                            pass
+
+        # If input_data has collection but raw_stdin is missing, reconstruct standard STDIN
+        if not getattr(tc, "raw_stdin", None) and ast_params:
+            for p in ast_params:
+                if p in tc.input_data and isinstance(tc.input_data[p], (list, tuple)):
+                    tc.raw_stdin = f"{len(tc.input_data[p])}\n{' '.join(str(x) for x in tc.input_data[p])}"
+                    break
+
+    return test_cases
 
 
 def analyze_edgemind(
@@ -375,6 +510,7 @@ def analyze_edgemind(
     parsed_test_cases: List[TestCase] = []
     if test_cases is not None:
         parsed_test_cases = parse_test_cases(test_cases)
+        parsed_test_cases = normalize_test_cases_for_signature(parsed_test_cases, code=code, problem_context=ctx)
 
     # 8. Disclaimers & Provenance guarantees
     provenance_meta = {

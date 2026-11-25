@@ -137,6 +137,13 @@ def test_github_actions_ci_workflow_structure():
     assert "fetch-depth: 0" in content, "Must fetch complete history for event diff checking"
     assert "actionlint" in content, "Must include actionlint workflow validation"
 
+    # 7. Frontend CI job (reproducible install, test, typecheck, production build)
+    assert "frontend-ci:" in content, "Must include frontend-ci job"
+    assert "npm ci" in content, "Frontend CI must use reproducible npm ci"
+    assert "npm test" in content, "Frontend CI must execute frontend tests"
+    assert "tsc -b" in content, "Frontend CI must validate TypeScript"
+    assert "npm run build" in content, "Frontend CI must build Vite production bundle"
+
 
 def test_production_deployment_documentation_completeness():
     """Verify docs/deployment/production.md covers all production requirements."""

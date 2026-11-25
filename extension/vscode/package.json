@@ -26,6 +26,7 @@
     "onCommand:edgemind.checkBackend",
     "onCommand:edgemind.analyzeCurrentFile",
     "onCommand:edgemind.analyzeSelection",
+    "onCommand:edgemind.showResults",
     "onCommand:edgemind.clearDiagnostics",
     "onLanguage:python"
   ],
@@ -57,6 +58,11 @@
         "category": "EdgeMind"
       },
       {
+        "command": "edgemind.showResults",
+        "title": "Show Analysis Results",
+        "category": "EdgeMind"
+      },
+      {
         "command": "edgemind.clearDiagnostics",
         "title": "Clear Diagnostics",
         "category": "EdgeMind"
@@ -76,8 +82,13 @@
         },
         {
           "when": "resourceExtname == .py",
-          "command": "edgemind.clearDiagnostics",
+          "command": "edgemind.showResults",
           "group": "EdgeMind@3"
+        },
+        {
+          "when": "resourceExtname == .py",
+          "command": "edgemind.clearDiagnostics",
+          "group": "EdgeMind@4"
         }
       ]
     },

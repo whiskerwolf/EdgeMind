@@ -9,17 +9,23 @@ from core.cost.calculator import (
     format_cost_usd,
 )
 from core.cost.models import (
+    AdminUsageAnalyticsResponse,
+    AdminUsageFilters,
     AgentUsageSummary,
     CostBreakdown,
     ModelLifecycleStatus,
     ModelPrice,
     ModelUsageSummary,
+    ProviderUsageSummary,
+    TenantUsageSummary,
     TokenUsage,
     UsageSource,
     UsageSummaryResponse,
 )
 
 __all__ = [
+    "AdminUsageAnalyticsResponse",
+    "AdminUsageFilters",
     "AgentUsageSummary",
     "CostBreakdown",
     "CostCalculator",
@@ -29,6 +35,8 @@ __all__ = [
     "ModelLifecycleStatus",
     "ModelPrice",
     "ModelUsageSummary",
+    "ProviderUsageSummary",
+    "TenantUsageSummary",
     "TokenUsage",
     "UsageSource",
     "UsageSummaryResponse",

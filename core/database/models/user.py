@@ -83,6 +83,12 @@ class User(Base, TimestampMixin):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    oauth_accounts: Mapped[List["OAuthAccount"]] = relationship(
+        "OAuthAccount",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to safe dictionary representation, permanently omitting password_hash."""

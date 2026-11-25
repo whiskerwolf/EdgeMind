@@ -395,11 +395,24 @@ def _python_parse_user_sample_inputs(input_data):
             if not item:
                 continue
             if isinstance(item, dict):
-                cases.append({
+                in_data = item.get("input_data", item)
+                raw_stdin = item.get("raw_stdin")
+                if isinstance(in_data, dict):
+                    keys = list(in_data.keys())
+                    if "n" in keys and "ar" in keys:
+                        if isinstance(in_data["n"], str) and "\n" in in_data["n"]:
+                            raw_stdin = raw_stdin or in_data["n"].strip()
+                        elif isinstance(in_data["ar"], list):
+                            raw_stdin = raw_stdin or f"{in_data['n']}\n{' '.join(str(x) for x in in_data['ar'])}"
+                        in_data = {k: v for k, v in in_data.items() if k != "n"}
+                tc_item = {
                     "id": f"sample_{idx + 1}",
                     "source": "PUBLIC_SAMPLE",
-                    "input_data": item.get("input_data", item)
-                })
+                    "input_data": in_data,
+                }
+                if raw_stdin:
+                    tc_item["raw_stdin"] = raw_stdin
+                cases.append(tc_item)
             elif isinstance(item, str):
                 d = _python_parse_assignment_string(item)
                 if d:
@@ -408,6 +421,31 @@ def _python_parse_user_sample_inputs(input_data):
                         "source": "PUBLIC_SAMPLE",
                         "input_data": d
                     })
+                else:
+                    lines = [l.strip() for l in item.split("\n") if l.strip() and not l.lower().startswith("output") and not l.lower().startswith("explanation")]
+                    if len(lines) >= 2:
+                        try:
+                            l1 = int(lines[0])
+                            tokens = [int(x) if x.lstrip("-").isdigit() else float(x) for x in lines[1].split()]
+                            cases.append({
+                                "id": f"sample_{len(cases) + 1}",
+                                "source": "PUBLIC_SAMPLE",
+                                "input_data": {"ar": tokens},
+                                "raw_stdin": item.strip()
+                            })
+                        except Exception:
+                            pass
+                    elif len(lines) == 1 and not lines[0].lower().startswith("no valid"):
+                        try:
+                            v = int(lines[0]) if lines[0].lstrip("-").isdigit() else lines[0]
+                            cases.append({
+                                "id": f"sample_{len(cases) + 1}",
+                                "source": "PUBLIC_SAMPLE",
+                                "input_data": {"val": v},
+                                "raw_stdin": item.strip()
+                            })
+                        except Exception:
+                            pass
         return cases
 
     if not isinstance(input_data, str) or not input_data.strip():
@@ -784,8 +822,8 @@ def test_baseline_source_label_handling():
     assert "elSamplesSourceValue" in js
     assert "samples-source-value" in js
 
-    # Displays appropriate label for unsupported pages
-    assert "Unavailable — Open a LeetCode problem" in js
+    # Displays appropriate label for unsupported pages across platforms
+    assert "Unavailable — Supported Platform Required" in js
 
     # Conditional update for LeetCode problem pages
     assert '"LeetCode Public Examples"' in js

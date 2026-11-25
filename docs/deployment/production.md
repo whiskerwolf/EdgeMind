@@ -221,6 +221,8 @@ If disaster recovery is required:
 docker exec -i edgemind-postgres psql -U postgres -d edgemind < backup_edgemind.sql
 ```
 
+For OCI production deployments, automated daily `pg_dump` backups (`/opt/edgemind/backups`, 7-day retention by default) and daily `refresh_tokens` cleanup run via systemd timers installed by `deploy/oci/scripts/install-systemd-timers.sh`. See `deploy/oci/README.md` (Section 6) for schedule overrides, retention variables (`BACKUP_DIR`, `RETENTION_DAYS`, `TOKEN_CLEANUP_GRACE_DAYS`, `TOKEN_CLEANUP_REVOKED_GRACE_DAYS`), `restore-postgres.sh`, and troubleshooting.
+
 ---
 
 ## 8. Health Checks, Logging and Monitoring

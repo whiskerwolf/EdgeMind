@@ -1,0 +1,22 @@
+# ==============================================================================
+# EdgeMind Production Frontend + Caddy Reverse Proxy Image
+# Builds the React SPA via Vite and serves static assets via caddy:2.9.1-alpine
+# alongside reverse proxy rules for FastAPI backend (/api/*, /health).
+# ==============================================================================
+
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /web
+
+ARG VITE_API_BASE_URL=""
+ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
+FROM caddy:2.9.1-alpine AS runtime
+
+COPY --from=frontend-builder /web/dist /srv/web

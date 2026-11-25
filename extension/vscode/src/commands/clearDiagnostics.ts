@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { Logger } from '../utils/logger';
+import { ResultsPanel } from '../ui/results/resultsPanel';
 
 /**
  * Command handler for "EdgeMind: Clear Diagnostics" (edgemind.clearDiagnostics).
@@ -20,5 +21,9 @@ export function clearDiagnostics(
     diagnosticCollection.clear();
     logger.info('EdgeMind diagnostics cleared for all documents.');
     vscode.window.showInformationMessage('EdgeMind diagnostics cleared.');
+  }
+
+  if (ResultsPanel.currentPanel) {
+    ResultsPanel.currentPanel.showEmptyState();
   }
 }

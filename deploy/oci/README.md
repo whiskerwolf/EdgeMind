@@ -143,23 +143,81 @@ deploy/oci/
 
 ---
 
-## 6. Database Backups & Restoration
+## 6. Automated Backups, Database Maintenance & Restoration
 
-### Automated Daily Backups
-Add a cron job on the host VM:
+EdgeMind uses host-level **systemd timers** (`deploy/oci/systemd/`) rather than an in-process Python scheduler daemon. Running backups and database maintenance as `Type=oneshot` units eliminates background memory overhead on ARM64 nodes, ensures single-instance execution (`flock` + systemd serialization), and routes sanitized logs directly to `systemd-journald`.
+
+### Enabling Scheduled Timers (Recommended)
+
+Install and enable both daily timers on the OCI host:
 ```bash
-crontab -e
+sudo /opt/edgemind/deploy/oci/scripts/install-systemd-timers.sh
+systemctl list-timers 'edgemind-*'
 ```
-Add the following entry to execute backups daily at 02:00 UTC:
+
+### Schedules & Retention Policies
+
+| Job | Systemd Timer | Default Schedule | Persistent Storage / Target | Retention / Policy |
+| --- | --- | --- | --- | --- |
+| **PostgreSQL Backup** | `edgemind-backup.timer` | `*-*-* 02:00:00 UTC` (+5m jitter) | `/opt/edgemind/backups` (`0700` permissions) | Keeps `RETENTION_DAYS=7` days of verified `edgemind_postgres_*.sql.gz` dumps |
+| **DB Token Maintenance** | `edgemind-maintenance.timer` | `*-*-* 03:00:00 UTC` (+5m jitter) | `refresh_tokens` table via `python -m core.auth.maintenance` | Prunes tokens expired `> TOKEN_CLEANUP_GRACE_DAYS` (`1`d) or revoked `> TOKEN_CLEANUP_REVOKED_GRACE_DAYS` (`7`d) |
+
+- **Backup Safety**: `scripts/backup-postgres.sh` reuses `docker compose exec -T postgres pg_dump`, verifies archive integrity (`gzip -t`), cleans up incomplete files on failure, enforces `flock` single-instance locking, and never prints database passwords.
+- **Maintenance Safety**: `core.auth.maintenance` never deletes active unexpired refresh tokens (`is_revoked=False`), user accounts, or historical analysis reports. Recently revoked tokens remain within their reuse-detection window until expired or older than `TOKEN_CLEANUP_REVOKED_GRACE_DAYS`.
+
+### Configuration Variables & Schedule Overrides
+
+Runtime policy variables can be configured in `/etc/edgemind/maintenance.env` (created automatically from `deploy/oci/systemd/maintenance.env.example`) or `deploy/oci/.env.production`:
+- `BACKUP_DIR` (default: `/opt/edgemind/backups`)
+- `RETENTION_DAYS` (default: `7`)
+- `TOKEN_CLEANUP_GRACE_DAYS` (default: `1`)
+- `TOKEN_CLEANUP_REVOKED_GRACE_DAYS` (default: `7`)
+
+To customize a timer schedule cleanly without modifying tracked files:
+```bash
+sudo systemctl edit edgemind-backup.timer
+# Example drop-in override for twice-daily backups:
+# [Timer]
+# OnCalendar=
+# OnCalendar=*-*-* 02,14:00:00 UTC
+```
+
+For environments without systemd, you can trigger the same wrappers via root/ubuntu crontab:
 ```cron
 0 2 * * * /opt/edgemind/deploy/oci/scripts/backup-postgres.sh >> /var/log/edgemind-backup.log 2>&1
+0 3 * * * /opt/edgemind/deploy/oci/scripts/run-db-maintenance.sh >> /var/log/edgemind-maintenance.log 2>&1
+```
+
+### Dry-Run & Manual Verification
+
+```bash
+# Preview eligible expired/revoked refresh tokens without deleting anything
+./scripts/run-db-maintenance.sh --dry-run
+
+# Trigger an immediate on-demand backup or maintenance run
+sudo systemctl start edgemind-backup.service
+sudo systemctl start edgemind-maintenance.service
 ```
 
 ### Database Restoration
-To restore from a backup:
+
+Verify and restore any backup archive cleanly:
 ```bash
+gzip -t /opt/edgemind/backups/edgemind_postgres_YYYYMMDD_HHMMSS.sql.gz
 ./scripts/restore-postgres.sh /opt/edgemind/backups/edgemind_postgres_YYYYMMDD_HHMMSS.sql.gz --confirm
 ```
+
+### Troubleshooting Scheduled Jobs
+
+- **Inspect execution history and failures**:
+  ```bash
+  journalctl -u edgemind-backup.service -n 50 --no-pager
+  journalctl -u edgemind-maintenance.service -n 50 --no-pager
+  systemctl status edgemind-backup.timer edgemind-maintenance.timer
+  ```
+- **Maintenance exited non-zero ("backend service is not running")**: Confirm the stack is healthy with `docker compose -f docker-compose.production.yml ps` and rerun `./scripts/deploy.sh` if containers are stopped.
+- **Database unconfigured in local/stateless tests**: `python -m core.auth.maintenance` exits `0` cleanly with a warning log instead of crashing.
+- **Lock contention warning (`Another ... instance is already running`)**: A prior run is still executing; check `ps aux` or remove a stale lock file only after verifying no job is active.
 
 ---
 

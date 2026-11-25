@@ -417,3 +417,27 @@ def test_issue2_unknown_semantics_not_inferred_solely_from_parameter_names():
     cls_search, _ = classify_candidate(tc_search, spec_search, context=ctx_search)
     assert cls_search == CandidateClassification.VALID.value
 
+
+def test_multivariable_inequality_does_not_infer_non_length_scalar_as_length():
+    """Verify that multi-variable inequalities with non-length scalars (e.g. target) do not set negative array lengths."""
+    raw = [
+        "1 <= nums.length <= 10^4",
+        "-10^4 < nums[i], target < 10^4",
+    ]
+    spec, unresolved = parse_constraint_expressions(raw, known_parameters=["nums", "target"])
+    # nums.length should be 1, not -9999
+    assert spec.min_length == 1
+    assert spec.max_length == 10000
+    assert "nums" in spec.param_specs
+    assert spec.param_specs["nums"].min_length == 1
+    assert spec.param_specs["nums"].min_value == -9999
+    assert spec.param_specs["nums"].max_value == 9999
+    # target must have min/max value, but NO min_length or cross-constraint claiming target == len(nums)
+    assert "target" in spec.param_specs
+    assert spec.param_specs["target"].min_length is None
+    assert spec.param_specs["target"].min_value == -9999
+    assert spec.param_specs["target"].max_value == 9999
+    for cc in spec.cross_constraints:
+        assert cc.expression != "target == len(nums)"
+
+

@@ -9,4 +9,5 @@ export const Endpoints = {
   EDGEMIND_ANALYZE: '/api/v1/edgemind/analyze',
   AGENT_ANALYZE: '/api/v1/agent/analyze',
   AGENT_STREAM: '/api/v1/agent/analyze/stream',
+  DIAGNOSE_STREAM: '/api/v1/diagnose/stream',
 } as const;

@@ -293,8 +293,19 @@ def _bind_parameter_constraints(
         elif p_name in line_lower and "english letter" in line_lower:
             param.allowed_characters = "a-zA-Z"
 
-    # Fallback to global spec where parameter has no specific bounds
+    # Fallback to global spec and granular param_specs where parameter has no specific bounds
     if global_spec:
+        if global_spec.param_specs and p_name in global_spec.param_specs:
+            p_sp = global_spec.param_specs[p_name]
+            if param.min_length is None and p_sp.min_length is not None:
+                param.min_length = p_sp.min_length
+            if param.max_length is None and p_sp.max_length is not None:
+                param.max_length = p_sp.max_length
+            if param.min_value is None and p_sp.min_value is not None:
+                param.min_value = p_sp.min_value
+            if param.max_value is None and p_sp.max_value is not None:
+                param.max_value = p_sp.max_value
+
         if param.structure in ("array_1d", "matrix_2d") or param.param_type == "str":
             if param.min_length is None and global_spec.min_length is not None:
                 param.min_length = global_spec.min_length

@@ -27,6 +27,7 @@
   // DOM Elements
   const elApiStatus = document.getElementById("api-status");
   const elApiStatusText = document.getElementById("api-status-text");
+  const elPlatformBadge = document.getElementById("platform-badge");
   const elPageTitle = document.getElementById("page-title");
   const elLangBadge = document.getElementById("lang-badge");
   const elConstraintsBadge = document.getElementById("constraints-badge");
@@ -178,19 +179,57 @@
    * Derive a reliable fallback title from Chrome tab or URL slug.
    */
   function getFallbackTitle(tab) {
-    if (!tab) return "LeetCode Problem";
+    if (!tab) return "Problem";
+    const url = tab.url || "";
     if (tab.title) {
-      const cleaned = tab.title.replace(/\s*-\s*LeetCode.*$/i, "").trim();
+      const cleaned = tab.title
+        .replace(/\s*-\s*LeetCode.*$/i, "")
+        .replace(/\s*\|\s*HackerRank.*$/i, "")
+        .replace(/^Solve\s+/i, "")
+        .replace(/\s*-\s*Codeforces.*$/i, "")
+        .replace(/^Problem\s*-\s*/i, "")
+        .trim();
       if (isValidTitle(cleaned)) return cleaned;
     }
-    if (tab.url) {
-      const urlMatch = tab.url.match(/problems\/([^/]+)/);
+    if (url.includes("leetcode.com")) {
+      const urlMatch = url.match(/problems\/([^/]+)/);
       if (urlMatch && urlMatch[1]) {
         const slugTitle = urlMatch[1].split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
         if (isValidTitle(slugTitle)) return slugTitle;
       }
+      return "LeetCode Problem";
     }
-    return "LeetCode Problem";
+    if (url.includes("hackerrank.com")) {
+      const urlMatch = url.match(/challenges\/([^/]+)/);
+      if (urlMatch && urlMatch[1]) {
+        const slugTitle = urlMatch[1].split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+        if (isValidTitle(slugTitle)) return slugTitle;
+      }
+      return "HackerRank Challenge";
+    }
+    if (url.includes("codeforces.com")) {
+      const psetMatch = url.match(/\/problemset\/problem\/(\d+)\/([a-zA-Z0-9]+)/i);
+      if (psetMatch) {
+        return `Codeforces Problem ${psetMatch[1]}${psetMatch[2].toUpperCase()}`;
+      }
+      const contestMatch = url.match(/\/contest\/(\d+)\/problem\/([a-zA-Z0-9]+)/i);
+      if (contestMatch) {
+        return `Codeforces Problem ${contestMatch[1]}${contestMatch[2].toUpperCase()}`;
+      }
+      const gymMatch = url.match(/\/gym\/(\d+)\/problem\/([a-zA-Z0-9]+)/i);
+      if (gymMatch) {
+        return `Codeforces Gym Problem ${gymMatch[1]}${gymMatch[2].toUpperCase()}`;
+      }
+      const contestSubmitMatch = url.match(/\/contest\/(\d+)\/submit/i);
+      if (contestSubmitMatch) {
+        return `Codeforces Contest ${contestSubmitMatch[1]} Submit`;
+      }
+      if (url.includes("/problemset/submit")) {
+        return "Codeforces Submit";
+      }
+      return "Codeforces Problem";
+    }
+    return "Problem";
   }
 
 
@@ -439,18 +478,49 @@
   }
 
   /**
-   * Inspect active tab and extract LeetCode page metadata.
+   * Helper functions for platform detection and platform-accurate sample source labels.
+   */
+  function getPlatformFromTab(tab) {
+    const url = (tab && tab.url ? tab.url : "").toLowerCase();
+    if (url.includes("leetcode.com")) return "leetcode";
+    if (url.includes("hackerrank.com")) return "hackerrank";
+    if (url.includes("codeforces.com")) return "codeforces";
+    return "unknown";
+  }
+
+  function getPlatformSamplesSourceLabel(tab) {
+    const platform = getPlatformFromTab(tab);
+    if (platform === "leetcode") return "LeetCode Public Examples";
+    if (platform === "hackerrank") return "HackerRank Sample Cases";
+    if (platform === "codeforces") return "Codeforces Sample Tests";
+    return "Unavailable — Supported Platform Required";
+  }
+
+  function getPlatformSamplesEmptyMessage(tab) {
+    const platform = getPlatformFromTab(tab);
+    if (platform === "leetcode") return "No public examples detected on this LeetCode problem page.";
+    if (platform === "hackerrank") return "No sample cases detected on this HackerRank challenge page.";
+    if (platform === "codeforces") return "No sample tests detected on this Codeforces problem page.";
+    return "Open a LeetCode, HackerRank, or Codeforces problem page to view samples.";
+  }
+
+  /**
+   * Inspect active tab and extract problem metadata across supported platforms.
    */
   async function inspectActiveTab() {
     try {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tabs || tabs.length === 0) {
+        if (elPlatformBadge) {
+          elPlatformBadge.textContent = "NONE";
+          elPlatformBadge.className = "badge badge-neutral";
+        }
         elPageTitle.textContent = "No active tab";
         if (elSamplesSourceValue) {
-          elSamplesSourceValue.textContent = "Unavailable — Open a LeetCode problem";
+          elSamplesSourceValue.textContent = "Unavailable — No active tab";
         }
         if (elSamplesEmptyMsg) {
-          elSamplesEmptyMsg.textContent = "Unavailable — Open a LeetCode problem page.";
+          elSamplesEmptyMsg.textContent = "Open a LeetCode, HackerRank, or Codeforces problem page.";
         }
         return null;
       }
@@ -458,79 +528,125 @@
       currentTab = tabs[0];
       const url = currentTab.url || "";
 
-      if (url.includes("leetcode.com")) {
+      const isLeetCode = url.includes("leetcode.com");
+      const isHackerRank = url.includes("hackerrank.com");
+      const isCodeforces = url.includes("codeforces.com");
+      const isSupportedPlatform = isLeetCode || isHackerRank || isCodeforces;
+
+      if (isSupportedPlatform) {
         elBtnAnalyze.disabled = false;
         elBtnAnalyze.title = "";
         const fallbackTitle = getFallbackTitle(currentTab);
         elPageTitle.textContent = fallbackTitle;
         elPageTitle.title = fallbackTitle;
+
+        if (elPlatformBadge) {
+          if (isLeetCode) {
+            elPlatformBadge.textContent = "LEETCODE";
+          } else if (isHackerRank) {
+            elPlatformBadge.textContent = "HACKERRANK";
+          } else if (isCodeforces) {
+            elPlatformBadge.textContent = "CODEFORCES";
+          }
+          elPlatformBadge.className = "badge badge-neutral";
+        }
+
         elLangBadge.className = "badge badge-neutral";
         elLangBadge.textContent = "Detecting...";
         if (elSamplesSourceValue) {
-          elSamplesSourceValue.textContent = "LeetCode Public Examples";
+          elSamplesSourceValue.textContent = getPlatformSamplesSourceLabel(currentTab);
         }
         if (elSamplesEmptyMsg) {
-          elSamplesEmptyMsg.textContent = "No public examples detected on this problem page.";
+          elSamplesEmptyMsg.textContent = getPlatformSamplesEmptyMessage(currentTab);
         }
 
         // Query content script for deeper problem info
+        function applyProblemInfo(response) {
+          if (!response) return;
+          detectedPageInfo = response;
+          if (isValidTitle(response.title)) {
+            elPageTitle.textContent = response.title;
+            elPageTitle.title = response.title;
+          } else if (!isValidTitle(elPageTitle.textContent)) {
+            elPageTitle.textContent = fallbackTitle;
+            elPageTitle.title = fallbackTitle;
+          }
+          if (response.language && response.language !== "unknown") {
+            const langLow = response.language.toLowerCase();
+            elLangBadge.textContent = response.language.toUpperCase();
+            if (langLow.includes("python")) {
+              elLangBadge.className = "badge badge-neutral";
+            } else {
+              elLangBadge.className = "badge badge-fail";
+            }
+          } else {
+            // Platform identity is kept separate on elPlatformBadge; language is not selected/unavailable
+            elLangBadge.textContent = "Unavailable";
+            elLangBadge.className = "badge badge-subtle";
+          }
+          if (response.constraints && response.constraints.length > 0) {
+            elConstraintsBadge.textContent = `${response.constraints.length} Constraints`;
+            elConstraintsBadge.classList.remove("hidden");
+          } else {
+            elConstraintsBadge.textContent = "0 Constraints";
+            elConstraintsBadge.classList.remove("hidden");
+          }
+          if (response.sampleInputs) {
+            populateSampleInputs(response.sampleInputs);
+          }
+        }
+
         try {
           chrome.tabs.sendMessage(currentTab.id, { action: "GET_PROBLEM_INFO" }, response => {
             if (chrome.runtime.lastError || !response) {
+              // Programmatic fallback injection if tab was open before extension reload
+              if (chrome.scripting && typeof chrome.scripting.executeScript === "function") {
+                chrome.scripting.executeScript({
+                  target: { tabId: currentTab.id },
+                  files: ["scripts/content.js"]
+                }).then(() => {
+                  chrome.tabs.sendMessage(currentTab.id, { action: "GET_PROBLEM_INFO" }, retryResp => {
+                    if (chrome.runtime.lastError || !retryResp) return;
+                    applyProblemInfo(retryResp);
+                  });
+                }).catch(() => {});
+              }
               return;
             }
-            detectedPageInfo = response;
-            if (isValidTitle(response.title)) {
-              elPageTitle.textContent = response.title;
-              elPageTitle.title = response.title;
-            } else if (!isValidTitle(elPageTitle.textContent)) {
-              elPageTitle.textContent = fallbackTitle;
-              elPageTitle.title = fallbackTitle;
-            }
-            if (response.language && response.language !== "unknown") {
-              const langLow = response.language.toLowerCase();
-              elLangBadge.textContent = response.language.toUpperCase();
-              if (langLow.includes("python")) {
-                elLangBadge.className = "badge badge-neutral";
-              } else {
-                elLangBadge.className = "badge badge-fail";
-              }
-            }
-            if (response.constraints && response.constraints.length > 0) {
-              elConstraintsBadge.textContent = `${response.constraints.length} Constraints`;
-              elConstraintsBadge.classList.remove("hidden");
-            } else {
-              elConstraintsBadge.textContent = "0 Constraints";
-              elConstraintsBadge.classList.remove("hidden");
-            }
-            if (response.sampleInputs) {
-              populateSampleInputs(response.sampleInputs);
-            }
+            applyProblemInfo(response);
           });
         } catch {
           // Content script not yet injected or tab loading
         }
       } else {
-        elPageTitle.textContent = "LeetCode Problem Required";
-        elPageTitle.title = "Open a LeetCode problem page to analyze.";
+        if (elPlatformBadge) {
+          elPlatformBadge.textContent = "UNSUPPORTED";
+          elPlatformBadge.className = "badge badge-fail";
+        }
+        elPageTitle.textContent = "Supported Platform Required";
+        elPageTitle.title = "Open a LeetCode, HackerRank, or Codeforces problem page to analyze.";
         elLangBadge.className = "badge badge-neutral";
         elLangBadge.textContent = "Inactive";
         elConstraintsBadge.classList.add("hidden");
         elBtnAnalyze.disabled = true;
-        elBtnAnalyze.title = "Open a LeetCode problem page to analyze";
+        elBtnAnalyze.title = "Open a LeetCode, HackerRank, or Codeforces problem page to analyze";
         if (elSamplesSourceValue) {
-          elSamplesSourceValue.textContent = "Unavailable — Open a LeetCode problem";
+          elSamplesSourceValue.textContent = "Unavailable — Supported Platform Required";
         }
         if (elSamplesEmptyMsg) {
-          elSamplesEmptyMsg.textContent = "Unavailable — Open a LeetCode problem page.";
+          elSamplesEmptyMsg.textContent = "Open a LeetCode, HackerRank, or Codeforces problem page to view samples.";
         }
       }
 
       return currentTab;
     } catch {
+      if (elPlatformBadge) {
+        elPlatformBadge.textContent = "ERROR";
+        elPlatformBadge.className = "badge badge-fail";
+      }
       elPageTitle.textContent = "Tab error";
       if (elSamplesSourceValue) {
-        elSamplesSourceValue.textContent = "Unavailable — Open a LeetCode problem";
+        elSamplesSourceValue.textContent = "Unavailable — Tab error";
       }
       return null;
     }
@@ -547,9 +663,8 @@
     if (elSamplesCountBadge) elSamplesCountBadge.textContent = String(count);
     if (elSamplesFoundCount) elSamplesFoundCount.textContent = String(count);
 
-    const isLeetCode = Boolean(currentTab && currentTab.url && currentTab.url.includes("leetcode.com"));
     if (elSamplesSourceValue) {
-      elSamplesSourceValue.textContent = isLeetCode ? "LeetCode Public Examples" : "Unavailable — Open a LeetCode problem";
+      elSamplesSourceValue.textContent = getPlatformSamplesSourceLabel(currentTab);
     }
 
     if (count > 0) {
@@ -564,7 +679,8 @@
         list.forEach((sample, idx) => {
           const item = document.createElement("div");
           item.className = "sample-item";
-          item.textContent = `Example ${idx + 1}: ${sample}`;
+          const displaySample = cleanHackerRankSampleInput(typeof sample === "string" ? sample : JSON.stringify(sample));
+          item.textContent = `Example ${idx + 1}: ${displaySample}`;
           elSamplesList.appendChild(item);
         });
       }
@@ -575,9 +691,7 @@
       }
       if (elSamplesEmptyMsg) {
         elSamplesEmptyMsg.classList.remove("hidden");
-        elSamplesEmptyMsg.textContent = isLeetCode
-          ? "No public examples detected on this problem page."
-          : "Unavailable — Open a LeetCode problem page.";
+        elSamplesEmptyMsg.textContent = getPlatformSamplesEmptyMessage(currentTab);
       }
       if (elSamplesList) {
         elSamplesList.classList.add("hidden");
@@ -703,6 +817,86 @@
   }
 
   /**
+   * Helper to clean HackerRank STDIN diagram/explanation blocks.
+   */
+  function cleanHackerRankSampleInput(raw) {
+    if (!raw || typeof raw !== "string") return "";
+    const isHrDiagram = /stdin\s+function/i.test(raw) || (/ar\[\]\s*size/i.test(raw) && /n\s*=/i.test(raw));
+    if (!isHrDiagram) return raw.trim();
+
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const stdinLines = [];
+
+    for (const line of lines) {
+      if (/^stdin\s+function/i.test(line)) continue;
+      if (/^[-=\s]+$/.test(line)) continue;
+      if (/^output/i.test(line) || /^explanation/i.test(line)) break;
+
+      const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\[[\s\S]*\])$/);
+      if (assignMatch) continue;
+
+      const colMatch = line.match(/^([0-9\s-]+?)(?:\s+[a-zA-Z_\[\]].*)$/);
+      if (colMatch && colMatch[1].trim()) {
+        stdinLines.push(colMatch[1].trim());
+        continue;
+      }
+
+      if (/^[0-9\s-]+$/.test(line)) {
+        stdinLines.push(line.trim());
+        continue;
+      }
+    }
+
+    return stdinLines.length > 0 ? stdinLines.join("\n") : raw.trim();
+  }
+
+  function cleanHackerRankSample(raw) {
+    if (!raw || typeof raw !== "string") return null;
+    const isHrDiagram = /stdin\s+function/i.test(raw) || (/ar\[\]\s*size/i.test(raw) && /n\s*=/i.test(raw));
+    if (!isHrDiagram) return null;
+
+    const lines = raw.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    let functionArr = null;
+    const stdinLines = [];
+
+    for (const line of lines) {
+      if (/^stdin\s+function/i.test(line)) continue;
+      if (/^[-=\s]+$/.test(line)) continue;
+      if (/^output/i.test(line) || /^explanation/i.test(line)) break;
+
+      const assignMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(\[[\s\S]*\])$/);
+      if (assignMatch) {
+        try {
+          functionArr = JSON.parse(assignMatch[2]);
+        } catch {}
+        continue;
+      }
+
+      const colMatch = line.match(/^([0-9\s-]+?)(?:\s+[a-zA-Z_\[\]].*)$/);
+      if (colMatch && colMatch[1].trim()) {
+        stdinLines.push(colMatch[1].trim());
+        continue;
+      }
+
+      if (/^[0-9\s-]+$/.test(line)) {
+        stdinLines.push(line.trim());
+        continue;
+      }
+    }
+
+    const cleanStdin = stdinLines.join("\n");
+    let inputData = null;
+    if (functionArr) {
+      inputData = { ar: functionArr };
+    } else if (stdinLines.length >= 2) {
+      const elements = stdinLines[1].split(/\s+/).map(Number).filter(n => !isNaN(n));
+      inputData = { ar: elements };
+    }
+
+    return { cleanStdin, inputData };
+  }
+
+  /**
    * Parse input samples into structured test_cases for backend consumption.
    * Accepts either an array of sample strings or a raw formatted string.
    */
@@ -715,19 +909,83 @@
       inputData.forEach((item, idx) => {
         if (!item) return;
         if (typeof item === "object") {
+          let inData = "input_data" in item ? item.input_data : item;
+          let rawStdin = item.raw_stdin || null;
+          // Normalize HackerRank representation if object contains {"n": ..., "ar": ...}
+          if (inData && typeof inData === "object") {
+            const keys = Object.keys(inData);
+            if (keys.includes("n") && keys.includes("ar")) {
+              if (typeof inData.n === "string" && inData.n.includes("\n")) {
+                rawStdin = rawStdin || inData.n.trim();
+              } else if (Array.isArray(inData.ar)) {
+                rawStdin = rawStdin || `${inData.n}\n${inData.ar.join(" ")}`;
+              }
+              const cleaned = { ...inData };
+              delete cleaned.n;
+              inData = cleaned;
+            }
+          }
           cases.push({
             id: `sample_${idx + 1}`,
             source: "PUBLIC_SAMPLE",
-            input_data: "input_data" in item ? item.input_data : item
+            input_data: inData,
+            ...(rawStdin ? { raw_stdin: rawStdin } : {})
           });
         } else if (typeof item === "string") {
-          const dict = parseAssignmentString(item);
-          if (dict && Object.keys(dict).length > 0) {
+          const hrCleaned = cleanHackerRankSample(item);
+          if (hrCleaned && hrCleaned.inputData) {
             cases.push({
               id: `sample_${cases.length + 1}`,
               source: "PUBLIC_SAMPLE",
-              input_data: dict
+              input_data: hrCleaned.inputData,
+              raw_stdin: hrCleaned.cleanStdin
             });
+            return;
+          }
+          const dict = parseAssignmentString(item);
+          if (dict && Object.keys(dict).length > 0) {
+            let inData = dict;
+            let rawStdin = null;
+            if ("n" in inData && "ar" in inData) {
+              if (typeof inData.n === "string" && inData.n.includes("\n")) {
+                rawStdin = inData.n.trim();
+              } else if (Array.isArray(inData.ar)) {
+                rawStdin = `${inData.n}\n${inData.ar.join(" ")}`;
+              }
+              const cleaned = { ...inData };
+              delete cleaned.n;
+              inData = cleaned;
+            }
+            cases.push({
+              id: `sample_${cases.length + 1}`,
+              source: "PUBLIC_SAMPLE",
+              input_data: inData,
+              ...(rawStdin ? { raw_stdin: rawStdin } : {})
+            });
+          } else {
+            // Raw STDIN lines (e.g. HackerRank "6\n1 2 3 4 10 11")
+            const lines = item.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0 && !/^output/i.test(l) && !/^explanation/i.test(l));
+            if (lines.length >= 2) {
+              const line1Num = Number(lines[0]);
+              const secondLineTokens = lines[1].split(/\s+/).map(Number);
+              if (!isNaN(line1Num) && secondLineTokens.every(n => !isNaN(n))) {
+                cases.push({
+                  id: `sample_${cases.length + 1}`,
+                  source: "PUBLIC_SAMPLE",
+                  input_data: { ar: secondLineTokens },
+                  raw_stdin: item.trim()
+                });
+              }
+            } else if (lines.length === 1 && !lines[0].toLowerCase().startsWith("no valid")) {
+              const singleVal = lines[0];
+              const numVal = Number(singleVal);
+              cases.push({
+                id: `sample_${cases.length + 1}`,
+                source: "PUBLIC_SAMPLE",
+                input_data: { val: isNaN(numVal) ? singleVal : numVal },
+                raw_stdin: item.trim()
+              });
+            }
           }
         }
       });
@@ -1059,27 +1317,44 @@
     const fullInputString = JSON.stringify(candidate.input_data, null, 2);
 
     // Header: Rank + Label + Score
+    const isRanked = candidate.is_ranked === true || (typeof candidate.rank === "number" && !isNaN(candidate.rank) && candidate.is_ranked !== false);
+
     const header = document.createElement("div");
     header.className = "candidate-header";
 
     const rankGroup = document.createElement("div");
     rankGroup.className = "candidate-rank-group";
 
-    const rankBadge = document.createElement("span");
-    rankBadge.className = "candidate-rank";
-    rankBadge.textContent = `#${rankIndex + 1}`;
+    if (isRanked && typeof candidate.rank === "number") {
+      const rankBadge = document.createElement("span");
+      rankBadge.className = "candidate-rank";
+      rankBadge.textContent = `#${candidate.rank}`;
+      rankGroup.appendChild(rankBadge);
+    }
 
     const labelSpan = document.createElement("span");
     labelSpan.className = "candidate-label";
-    labelSpan.textContent = candidate.label || `Candidate ${rankIndex + 1}`;
-
-    rankGroup.appendChild(rankBadge);
+    if (isRanked && typeof candidate.rank === "number") {
+      labelSpan.textContent = candidate.label || candidate.id || `Candidate ${candidate.rank}`;
+    } else {
+      labelSpan.textContent = candidate.label || candidate.id || `Candidate ${rankIndex + 1}`;
+    }
     rankGroup.appendChild(labelSpan);
 
     const scorePill = document.createElement("span");
     scorePill.className = "candidate-score-pill";
-    const scoreVal = typeof candidate.relevance_score === "number" ? Math.round(candidate.relevance_score * 100) : 0;
-    scorePill.textContent = `Relevance: ${scoreVal}%`;
+    let scoreDisplay = null;
+    if (isRanked) {
+      const rawScore = typeof candidate.relevance_score === "number"
+        ? candidate.relevance_score
+        : (typeof candidate.score === "number" ? candidate.score : null);
+      if (rawScore !== null) {
+        const normScore = rawScore <= 1.0 ? (rawScore * 100) : rawScore;
+        const formatted = normScore % 1 === 0 ? normScore.toFixed(0) : normScore.toFixed(2).replace(/\.?0+$/, "");
+        scoreDisplay = `Relevance: ${formatted}%`;
+      }
+    }
+    scorePill.textContent = scoreDisplay !== null ? scoreDisplay : "Synthesized";
 
     header.appendChild(rankGroup);
     header.appendChild(scorePill);
@@ -1162,6 +1437,27 @@
       reasonRow.appendChild(rLabel);
       reasonRow.appendChild(rText);
       card.appendChild(reasonRow);
+    }
+
+    // Ranking explanation / rationale (ONLY for genuine ranked candidates)
+    if (isRanked) {
+      const rankExpl = candidate.ranking_explanation || (candidate.explanation && candidate.explanation.startsWith("Rank") ? candidate.explanation : "");
+      if (rankExpl) {
+        const explRow = document.createElement("div");
+        explRow.className = "candidate-reason-row candidate-rank-reason";
+
+        const eLabel = document.createElement("span");
+        eLabel.className = "candidate-reason-label";
+        eLabel.textContent = "Ranking:";
+
+        const eText = document.createElement("span");
+        eText.className = "candidate-reason-text";
+        eText.textContent = rankExpl;
+
+        explRow.appendChild(eLabel);
+        explRow.appendChild(eText);
+        card.appendChild(explRow);
+      }
     }
 
     // Concise Input Summary Box
@@ -1675,17 +1971,66 @@
     };
 
     // 2. Normalize test intelligence
-    const rawTI = raw.test_intelligence;
+    const rawTI = raw.test_intelligence || {};
 
-    const candidates = Array.isArray(rawTI.generated_candidates)
+    const rawGenerated = Array.isArray(rawTI.generated_candidates)
       ? rawTI.generated_candidates
       : (Array.isArray(rawTI.candidates)
           ? rawTI.candidates
-          : (Array.isArray(rawTI.selected_candidates) ? rawTI.selected_candidates : []));
+          : (Array.isArray(raw.generated_candidates)
+              ? raw.generated_candidates
+              : (Array.isArray(raw.candidates) ? raw.candidates : [])));
 
-    const rankedCandidates = Array.isArray(rawTI.ranked_candidates)
+    const rawRanked = Array.isArray(rawTI.ranked_candidates)
       ? rawTI.ranked_candidates
-      : candidates;
+      : (Array.isArray(raw.ranked_candidates)
+          ? raw.ranked_candidates
+          : (rawTI.ranking_result && Array.isArray(rawTI.ranking_result.ranked_candidates)
+              ? rawTI.ranking_result.ranked_candidates
+              : []));
+
+    // Keep ranked and generated candidates strictly separate; NEVER fall back from ranked to generated
+    const rankedCandidates = rawRanked
+      .filter(r => r && typeof r === "object")
+      .map((r, idx) => {
+        const candObj = (r.candidate && typeof r.candidate === "object") ? r.candidate : r;
+        const rankNum = (typeof r.rank === "number")
+          ? r.rank
+          : ((candObj && typeof candObj.rank === "number") ? candObj.rank : (idx + 1));
+        const scoreNum = (typeof r.score === "number")
+          ? r.score
+          : ((typeof r.relevance_score === "number")
+              ? r.relevance_score
+              : ((candObj && typeof candObj.score === "number")
+                  ? candObj.score
+                  : (candObj && typeof candObj.relevance_score === "number" ? candObj.relevance_score : null)));
+        const expl = (r.explanation || r.ranking_explanation || r.selection_reason)
+          || (candObj && (candObj.explanation || candObj.ranking_explanation || candObj.selection_reason))
+          || "";
+        const breakdown = r.score_breakdown || (candObj && candObj.score_breakdown) || null;
+        return {
+          ...candObj,
+          candidate: candObj,
+          rank: rankNum,
+          score: scoreNum,
+          relevance_score: scoreNum,
+          ranking_score: scoreNum,
+          score_breakdown: breakdown,
+          ranking_explanation: expl,
+          explanation: expl,
+          is_ranked: true
+        };
+      });
+
+    const generatedCandidates = rawGenerated
+      .filter(c => c && typeof c === "object")
+      .map(c => {
+        const candObj = (c.candidate && typeof c.candidate === "object") ? c.candidate : c;
+        const cloned = { ...candObj, candidate: candObj, is_ranked: false };
+        delete cloned.rank;
+        delete cloned.ranking_explanation;
+        return cloned;
+      });
 
     const coverageGaps = Array.isArray(rawTI.coverage_gaps)
       ? rawTI.coverage_gaps
@@ -1694,8 +2039,8 @@
     const rankingSummary = (rawTI.ranking_summary && typeof rawTI.ranking_summary === "object")
       ? rawTI.ranking_summary
       : {
-          total_evaluated: candidates.length,
-          selection_limit: candidates.length || 10,
+          total_evaluated: rawRanked.length || rawGenerated.length,
+          selection_limit: (rawRanked.length || rawGenerated.length) || 10,
           exact_duplicates_removed: 0
         };
 
@@ -1711,7 +2056,7 @@
       existing_tests_analyzed: existingTestsAnalyzed,
       coverage_gaps: coverageGaps,
       total_gaps: coverageGaps.length,
-      generated_candidates: candidates,
+      generated_candidates: generatedCandidates,
       ranked_candidates: rankedCandidates,
       ranking_summary: rankingSummary,
       detected_patterns: detectedPatterns,
@@ -1768,20 +2113,21 @@
     if (elPageTitle) {
       const pContext = report.context || (report.test_intelligence && report.test_intelligence.problem_context) || {};
       const probId = pContext.problem_id || (detectedPageInfo ? detectedPageInfo.problemId : "");
-      const probTitle = pContext.title || (detectedPageInfo ? detectedPageInfo.problemTitle : "");
-      if (probId && probTitle && !probTitle.startsWith(probId)) {
-        elPageTitle.textContent = `${probId}. ${probTitle}`;
-      } else if (probTitle) {
+      const probTitle = pContext.title || (detectedPageInfo ? (detectedPageInfo.title || detectedPageInfo.problemTitle) : "");
+      if (probTitle) {
         elPageTitle.textContent = probTitle;
+        elPageTitle.title = probTitle;
       } else if (probId) {
         elPageTitle.textContent = `Problem #${probId}`;
+        elPageTitle.title = `Problem #${probId}`;
       }
     }
 
     // 1. Process Test Intelligence
     const intel = report.test_intelligence || {};
     const gaps = intel.coverage_gaps || [];
-    const candidates = intel.generated_candidates || [];
+    const generatedCandidates = intel.generated_candidates || [];
+    const rankedCandidates = intel.ranked_candidates || [];
     const rankingSummary = intel.ranking_summary || {};
     const patterns = intel.detected_patterns || {};
 
@@ -1818,6 +2164,18 @@
         elModeConstraintsStatus.textContent = "Unavailable";
       }
     }
+    if (elConstraintsBadge) {
+      const pConstraints = report.parsed_constraints || {};
+      const totalRaw = typeof pConstraints.total_raw === "number"
+        ? pConstraints.total_raw
+        : (Array.isArray(report.problem_context && report.problem_context.constraints)
+            ? report.problem_context.constraints.length
+            : (pConstraints.status === "PARSED" ? 1 : 0));
+      if (totalRaw > 0) {
+        elConstraintsBadge.textContent = `${totalRaw} ${totalRaw === 1 ? "Constraint" : "Constraints"}`;
+        elConstraintsBadge.classList.remove("hidden");
+      }
+    }
     if (elModeParametersIdentified) {
       const pCount = (report.identified_parameters || []).length;
       elModeParametersIdentified.textContent = String(pCount);
@@ -1844,9 +2202,29 @@
       if (elContextModeDisclaimer) elContextModeDisclaimer.classList.add("hidden");
     }
 
-    elStatCandidates.textContent = String(candidates.length);
+    // Accurately report ranked candidates count: strictly genuine ranked candidates
+    elStatCandidates.textContent = String(rankedCandidates.length);
     elStatDedup.textContent = String(rankingSummary.exact_duplicates_removed || 0);
-    elCandidatesSubhead.textContent = `${candidates.length} ${candidates.length === 1 ? "Candidate" : "Candidates"}`;
+
+    if (rankedCandidates.length > 0) {
+      if (!isContextBased && elCandidatesSectionTitle) {
+        elCandidatesSectionTitle.textContent = "Ranked Edge-Case Candidates";
+      }
+      elCandidatesSubhead.textContent = `${rankedCandidates.length} Ranked ${rankedCandidates.length === 1 ? "Candidate" : "Candidates"}`;
+      allCandidatesData = rankedCandidates;
+    } else if (generatedCandidates.length > 0) {
+      if (!isContextBased && elCandidatesSectionTitle) {
+        elCandidatesSectionTitle.textContent = "Synthesized Edge-Case Candidates (Unranked)";
+      }
+      elCandidatesSubhead.textContent = `${generatedCandidates.length} Unranked ${generatedCandidates.length === 1 ? "Candidate" : "Candidates"}`;
+      allCandidatesData = generatedCandidates;
+    } else {
+      if (!isContextBased && elCandidatesSectionTitle) {
+        elCandidatesSectionTitle.textContent = "Synthesized Edge-Case Candidates";
+      }
+      elCandidatesSubhead.textContent = "0 Candidates";
+      allCandidatesData = [];
+    }
 
     // Render coverage gaps with 5-item initial view & "View All" toggle
     allGapsData = gaps;
@@ -1854,7 +2232,6 @@
     updateGapsDisplay();
 
     // Render candidates with 5-item initial view & "View All" toggle
-    allCandidatesData = candidates;
     isAllCandidatesExpanded = false;
     updateCandidatesDisplay();
 
@@ -2028,12 +2405,14 @@
     if (elUsageCard) elUsageCard.classList.add("hidden");
 
     // 1. Validate active tab
-    if (!currentTab || !currentTab.url || !currentTab.url.includes("leetcode.com")) {
-      showError("Please navigate to a LeetCode problem page before analyzing code.");
+    const tabUrl = currentTab ? (currentTab.url || "") : "";
+    const isSupportedTab = tabUrl.includes("leetcode.com") || tabUrl.includes("hackerrank.com") || tabUrl.includes("codeforces.com");
+    if (!currentTab || !tabUrl || !isSupportedTab) {
+      showError("Please navigate to a LeetCode, HackerRank, or Codeforces problem page before analyzing code.");
       return;
     }
 
-    setLoading(true, "Extracting Python code and Monaco buffer models...");
+    setLoading(true, "Extracting Python code and editor buffer models...");
 
     try {
       // 2. Execute extraction script in MAIN world
@@ -2044,7 +2423,7 @@
       });
 
       if (!injectionResults || injectionResults.length === 0 || !injectionResults[0].result) {
-        throw new Error("Unable to communicate with the LeetCode editor. Please ensure the page has finished loading.");
+        throw new Error("Unable to communicate with the page code editor. Please ensure the page has finished loading.");
       }
 
       const extraction = injectionResults[0].result;
@@ -2056,7 +2435,13 @@
             elLangBadge.className = "badge badge-fail";
           }
         }
-        throw new Error(extraction.error || "Failed to extract code from LeetCode editor.");
+        if (extraction.problemSelected === false) {
+          throw new Error(extraction.error || "No problem selected on the Codeforces submission page. Please select a problem before analyzing.");
+        }
+        if (extraction.editorAvailable === false) {
+          throw new Error(extraction.error || "No active code editor detected on this problem page. Please open the Submit page or ensure a code editor is open.");
+        }
+        throw new Error(extraction.error || "Failed to extract code from editor.");
       }
 
       const code = extraction.code;
@@ -2075,7 +2460,7 @@
 
       // 4. Validate source content
       if (!code || !code.trim()) {
-        throw new Error("The LeetCode editor is empty. Please enter or reset solution code before analyzing.");
+        throw new Error("The code editor is empty. Please enter or reset solution code before analyzing.");
       }
 
       // 5. Enforce 64 KiB client-side size limit
@@ -2087,7 +2472,7 @@
       }
 
       // 6. Automatically retrieve public examples and convert to test cases
-      let rawSamples = detectedSampleInputs || [];
+      let rawSamples = (detectedSampleInputs && detectedSampleInputs.length > 0) ? detectedSampleInputs : [];
       if (rawSamples.length === 0 && extraction.domSampleInputs && extraction.domSampleInputs.length > 0) {
         rawSamples = extraction.domSampleInputs;
         populateSampleInputs(rawSamples);
@@ -2115,22 +2500,53 @@
         probTitle = getFallbackTitle(currentTab);
       }
       if (!isValidTitle(probTitle)) {
-        probTitle = "LeetCode Problem";
+        probTitle = "Problem";
       }
 
       let probId = (detectedPageInfo && detectedPageInfo.problemId) ? detectedPageInfo.problemId : "";
       if (!probId && currentTab.url) {
-        const urlMatch = currentTab.url.match(/problems\/([^/]+)/);
-        if (urlMatch && urlMatch[1]) {
-          probId = urlMatch[1];
+        const leetMatch = currentTab.url.match(/problems\/([^/]+)/);
+        if (leetMatch && leetMatch[1]) probId = leetMatch[1];
+        else {
+          const hrMatch = currentTab.url.match(/challenges\/([^/]+)/);
+          if (hrMatch && hrMatch[1]) probId = hrMatch[1];
+          else {
+            const cfPsetMatch = currentTab.url.match(/\/problemset\/problem\/(\d+)\/([a-zA-Z0-9]+)/i);
+            if (cfPsetMatch) {
+              probId = `${cfPsetMatch[1]}${cfPsetMatch[2].toUpperCase()}`;
+            } else {
+              const cfContestMatch = currentTab.url.match(/\/contest\/(\d+)\/problem\/([a-zA-Z0-9]+)/i);
+              if (cfContestMatch) {
+                probId = `${cfContestMatch[1]}${cfContestMatch[2].toUpperCase()}`;
+              } else {
+                const cfGymMatch = currentTab.url.match(/\/gym\/(\d+)\/problem\/([a-zA-Z0-9]+)/i);
+                if (cfGymMatch) {
+                  probId = `gym-${cfGymMatch[1]}${cfGymMatch[2].toUpperCase()}`;
+                }
+              }
+            }
+          }
         }
       }
 
       elPageTitle.textContent = probTitle;
       elPageTitle.title = probTitle;
 
-      const rawConstraints = detectedPageInfo && detectedPageInfo.constraints ? detectedPageInfo.constraints : [];
+      const rawConstraints = (detectedPageInfo && detectedPageInfo.constraints && detectedPageInfo.constraints.length > 0)
+        ? detectedPageInfo.constraints
+        : (extraction.domConstraints && extraction.domConstraints.length > 0 ? extraction.domConstraints : []);
       const normalizedConstraints = rawConstraints.map(c => normalizeCollapsedExponents(c));
+
+      if (detectedPageInfo) {
+        if (!detectedPageInfo.constraints || detectedPageInfo.constraints.length === 0) {
+          detectedPageInfo.constraints = normalizedConstraints;
+        }
+      }
+
+      if (normalizedConstraints.length > 0 && elConstraintsBadge) {
+        elConstraintsBadge.textContent = `${normalizedConstraints.length} ${normalizedConstraints.length === 1 ? "Constraint" : "Constraints"}`;
+        elConstraintsBadge.classList.remove("hidden");
+      }
 
       const paramSet = new Set();
       if (detectedPageInfo && Array.isArray(detectedPageInfo.parameters)) {
@@ -2145,9 +2561,16 @@
           }
         });
       }
+      if (paramSet.has("ar") && paramSet.has("n")) {
+        paramSet.delete("n");
+      }
+
+      const activePlatform = (detectedPageInfo && detectedPageInfo.platform)
+        ? detectedPageInfo.platform
+        : (currentTab.url.includes("hackerrank.com") ? "hackerrank" : (currentTab.url.includes("codeforces.com") ? "codeforces" : "leetcode"));
 
       const problemContext = {
-        platform: "leetcode",
+        platform: activePlatform,
         problem_id: probId,
         title: probTitle,
         description: detectedPageInfo ? detectedPageInfo.description : "",

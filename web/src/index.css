@@ -48,3 +48,30 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* Monaco Finding Line Decorations */
+.em-monaco-line-error {
+  background-color: rgba(239, 68, 68, 0.12);
+}
+
+.em-monaco-line-warning {
+  background-color: rgba(245, 158, 11, 0.10);
+}
+
+.em-monaco-glyph-error {
+  background-color: #EF4444;
+  border-radius: 50%;
+  width: 7px !important;
+  height: 7px !important;
+  margin-top: 6px;
+  margin-left: 6px;
+}
+
+.em-monaco-glyph-warning {
+  background-color: #F59E0B;
+  border-radius: 50%;
+  width: 7px !important;
+  height: 7px !important;
+  margin-top: 6px;
+  margin-left: 6px;
+}

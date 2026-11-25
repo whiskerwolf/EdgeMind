@@ -3,13 +3,16 @@ Routes Package: Exports all REST API routers for EdgeMind.
 """
 
 from core.auth.router import auth_router, users_router
+from core.routes.admin import router as admin_router
 from core.routes.agent import router as agent_router
 from core.routes.analyses import router as analyses_router
+from core.routes.diagnose import router as diagnose_router
 from core.routes.problems import router as problems_router
 from core.routes.projects import router as projects_router
 from core.routes.reports import router as reports_router
 
 __all__ = [
+    "admin_router",
     "auth_router",
     "users_router",
     "projects_router",
@@ -17,5 +20,6 @@ __all__ = [
     "analyses_router",
     "reports_router",
     "agent_router",
+    "diagnose_router",
 ]
 

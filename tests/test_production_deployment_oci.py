@@ -100,17 +100,39 @@ def test_docker_compose_production_services_and_isolation():
 
 
 def test_caddyfile_security_headers_and_reverse_proxy():
-    """Verify Caddyfile reverse proxy to backend, security headers, and request limits."""
+    """Verify Caddyfile serves React SPA fallback, reverse proxies /api/* & /health, and enforces security headers."""
     caddy_path = DEPLOY_OCI_DIR / "Caddyfile"
     assert caddy_path.exists(), "Caddyfile must exist"
 
     content = caddy_path.read_text(encoding="utf-8")
     assert "reverse_proxy backend:8000" in content, "Caddy must reverse proxy to backend:8000"
+    assert "handle /health" in content, "Caddy must explicitly proxy /health to backend"
+    assert "handle /api/*" in content, "Caddy must explicitly proxy /api/* to backend"
+    assert "flush_interval -1" in content, "Caddy must stream SSE responses without buffering"
+    assert "root * /srv/web" in content, "Caddy must serve built frontend static root"
+    assert "try_files {path} /index.html" in content, "Caddy must provide SPA fallback to index.html"
+    assert "file_server" in content, "Caddy must enable static file_server"
     assert "Strict-Transport-Security" in content, "Must configure HSTS"
     assert "X-Content-Type-Options" in content
     assert "X-Frame-Options" in content
     assert "max_size 10MB" in content, "Must limit request body size"
     assert "encode zstd gzip" in content, "Must enable compression"
+
+
+def test_frontend_caddy_dockerfile_and_compose_build():
+    """Verify Dockerfile.web builds the Vite SPA and packages it into caddy:2.9.1-alpine."""
+    df_web_path = DEPLOY_OCI_DIR / "Dockerfile.web"
+    assert df_web_path.exists(), "deploy/oci/Dockerfile.web must exist"
+    df_web = df_web_path.read_text(encoding="utf-8")
+    assert "FROM node:20-alpine AS frontend-builder" in df_web
+    assert "npm ci" in df_web
+    assert "npm run build" in df_web
+    assert "FROM caddy:2.9.1-alpine AS runtime" in df_web
+    assert "COPY --from=frontend-builder /web/dist /srv/web" in df_web
+
+    compose_content = (DEPLOY_OCI_DIR / "docker-compose.production.yml").read_text(encoding="utf-8")
+    assert "dockerfile: deploy/oci/Dockerfile.web" in compose_content
+    assert "VITE_API_BASE_URL" in compose_content
 
 
 def test_cloud_init_security_and_sysctl_hardening():
@@ -159,6 +181,7 @@ def test_deploy_script_flow_and_migrations():
     assert "REDIS_PASSWORD" in deploy_sh
     assert "JWT_SECRET_KEY" in deploy_sh
     assert "alembic upgrade head" in deploy_sh, "Must run migrations to head"
+    assert "build backend caddy" in deploy_sh, "Must build both backend and frontend Caddy images"
     assert "ollama pull" in deploy_sh, "Must preload Ollama models"
     assert "/health" in deploy_sh, "Must verify health endpoint"
 

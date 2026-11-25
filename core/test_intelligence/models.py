@@ -348,6 +348,7 @@ class TestCase:
     is_performance: bool = False
     classification: Optional[str] = None
     classification_reason: Optional[str] = None
+    raw_stdin: Optional[str] = None
 
     def __post_init__(self):
         # 1. Enforce TestCaseSource type
@@ -397,6 +398,8 @@ class TestCase:
             res["classification"] = CandidateClassification.CONSTRAINT_VALIDITY_UNKNOWN.value
         if self.classification_reason:
             res["classification_reason"] = str(self.classification_reason)
+        if self.raw_stdin is not None:
+            res["raw_stdin"] = str(self.raw_stdin)
         return res
 
     @classmethod
@@ -417,6 +420,7 @@ class TestCase:
             is_performance=bool(data.get("is_performance", False)),
             classification=data.get("classification"),
             classification_reason=data.get("classification_reason"),
+            raw_stdin=data.get("raw_stdin"),
         )
 
 

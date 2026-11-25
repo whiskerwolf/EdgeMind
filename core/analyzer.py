@@ -5,6 +5,7 @@ from core.runtime import check_runtime
 from core.logic import check_logic
 from core.quality import check_quality
 from core.complexity import check_complexity
+from core.js_hoisting import check_js_hoisting, is_javascript_filename
 from core.smells import check_smells
 
 
@@ -31,6 +32,10 @@ ERROR_TYPES = {
     "AssertionError",
     "RecursionError",
     "TimeoutError",
+    "TemporalDeadZoneError",
+    "FunctionExpressionHoistingError",
+    "ClassHoistingError",
+    "BlockScopeError",
 }
 
 WARNING_TYPES = {
@@ -48,6 +53,7 @@ WARNING_TYPES = {
     "EmptyFunction",
     "DuplicateCode",
     "NestedLoops",
+    "VarHoistingWarning",
 }
 
 
@@ -97,6 +103,10 @@ def analyze_file(filename, static_only=False):
     try:
         with open(filename, "r", encoding="utf-8") as file:
             code = file.read()
+
+        if is_javascript_filename(filename):
+            results = AnalysisResultList(check_js_hoisting(code), static_only=True)
+            return deduplicate_results(results, static_only=True)
 
         try:
             compile(code, filename, "exec")

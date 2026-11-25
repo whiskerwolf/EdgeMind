@@ -1,6 +1,12 @@
 services:
   caddy:
-    image: caddy:2.9.1-alpine
+    # Multi-stage build using node:20-alpine + caddy:2.9.1-alpine (multi-arch ARM64)
+    build:
+      context: ../..
+      dockerfile: deploy/oci/Dockerfile.web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    image: ${CADDY_IMAGE:-edgemind-caddy-web:production}
     container_name: edgemind-prod-caddy
     restart: unless-stopped
     ports:
@@ -94,10 +100,17 @@ services:
       JWT_REFRESH_TOKEN_EXPIRE_DAYS: ${JWT_REFRESH_TOKEN_EXPIRE_DAYS:-7}
       JWT_ISSUER: ${JWT_ISSUER:-edgemind-api}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-edgemind-client}
+      REFRESH_TOKEN_CLEANUP_GRACE_DAYS: ${TOKEN_CLEANUP_GRACE_DAYS:-1}
+      REFRESH_TOKEN_REVOKED_GRACE_DAYS: ${TOKEN_CLEANUP_REVOKED_GRACE_DAYS:-7}
 
       # Administrator Bootstrap Credentials
       ADMIN_BOOTSTRAP_EMAIL: ${ADMIN_BOOTSTRAP_EMAIL:-}
       ADMIN_BOOTSTRAP_PASSWORD: ${ADMIN_BOOTSTRAP_PASSWORD:-}
+
+      # Optional OAuth 2.0 Configuration
+      OAUTH_GOOGLE_CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
+      OAUTH_GOOGLE_CLIENT_SECRET: ${OAUTH_GOOGLE_CLIENT_SECRET:-}
+      OAUTH_GOOGLE_REDIRECT_URI: ${OAUTH_GOOGLE_REDIRECT_URI:-}
 
       # Production CORS & Exact Chrome Extension Isolation
       CORS_ORIGINS: ${CORS_ORIGINS:-["https://edgemind.example.com"]}

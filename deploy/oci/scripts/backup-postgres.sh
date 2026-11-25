@@ -8,14 +8,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BACKUP_DIR="${BACKUP_DIR:-/opt/edgemind/backups}"
 RETENTION_DAYS="${RETENTION_DAYS:-7}"
+BACKUP_LOCK_FILE="${BACKUP_LOCK_FILE:-${BACKUP_DIR}/.edgemind-backup.lock}"
 TIMESTAMP="$(date +'%Y%m%d_%H%M%S')"
 BACKUP_FILE="${BACKUP_DIR}/edgemind_postgres_${TIMESTAMP}.sql.gz"
 
-echo "=== EdgeMind PostgreSQL Backup Started: $(date) ==="
+cleanup_partial_backup() {
+    local exit_code=$?
+    if [ "${exit_code}" -ne 0 ] && [ -f "${BACKUP_FILE}" ]; then
+        rm -f "${BACKUP_FILE}"
+        echo "ERROR: PostgreSQL backup failed (exit ${exit_code}); removed incomplete file ${BACKUP_FILE}" >&2
+    fi
+}
+trap cleanup_partial_backup EXIT
+
+if ! [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: RETENTION_DAYS must be a non-negative integer (got '${RETENTION_DAYS}')" >&2
+    exit 1
+fi
+
+echo "=== EdgeMind PostgreSQL Backup Started: $(date -u +'%Y-%m-%dT%H:%M:%SZ') ==="
 
 # Ensure backup directory exists with restricted permissions (0700)
 mkdir -p "${BACKUP_DIR}"
 chmod 700 "${BACKUP_DIR}"
+
+# Prevent overlapping backup runs when invoked concurrently
+if command -v flock >/dev/null 2>&1; then
+    exec 9>"${BACKUP_LOCK_FILE}"
+    if ! flock -n 9; then
+        echo "WARNING: Another EdgeMind PostgreSQL backup instance is already running; exiting cleanly." >&2
+        exit 0
+    fi
+fi
 
 # Verify production docker-compose file exists
 COMPOSE_FILE="${DEPLOY_DIR}/docker-compose.production.yml"

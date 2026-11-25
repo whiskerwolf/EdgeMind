@@ -203,6 +203,158 @@ class AgentOrchestrator:
             records=unique_records,
         )
 
+    def _finalize_test_intelligence(
+        self,
+        state: AgentState,
+        request: AgentAnalyzeRequest,
+        prob_ctx: Dict[str, Any],
+        parsed_constraints: Any,
+    ) -> Dict[str, Any]:
+        """
+        Finalize test intelligence payload ensuring deterministic ranking,
+        constraint validity classification, and raw_stdin reconstruction.
+        """
+        candidates = (
+            state.accumulated_context.get("selected_candidates")
+            or state.accumulated_context.get("candidates")
+            or []
+        )
+        ranked = state.accumulated_context.get("ranked_candidates") or []
+        gaps = state.accumulated_context.get("gaps") or []
+        ranking_summary = state.accumulated_context.get("ranking_summary") or {
+            "total_evaluated": len(candidates),
+            "selection_limit": request.max_candidates or 10,
+        }
+
+        # 1. Fallback ranking: If candidates generated but ranking tool was not called
+        if candidates and not ranked:
+            from core.test_intelligence.ranker import CandidateRanker
+            from core.service import parse_test_cases
+            ranker = CandidateRanker()
+            parsed_candidates = parse_test_cases(candidates)
+            parsed_existing = parse_test_cases(request.test_cases) if request.test_cases else []
+            ranking_res = ranker.rank_and_select(
+                candidates=parsed_candidates,
+                existing_tests=parsed_existing,
+                gaps=gaps,
+                max_selected=request.max_candidates or 10,
+            )
+            ranked = [r.to_dict() for r in ranking_res.ranked_candidates]
+            ranking_summary = {
+                "total_evaluated": ranking_res.total_evaluated,
+                "exact_duplicates_removed": ranking_res.exact_duplicates_removed,
+                "redundant_candidates_penalized": ranking_res.redundant_candidates_penalized,
+                "selection_limit": ranking_res.selection_limit,
+            }
+
+        # 2. Evaluate candidate validity classification against problem constraints
+        spec_for_classification = None
+        has_supplied = False
+        unres: List[str] = []
+        prob_constraints = prob_ctx.get("constraints") if isinstance(prob_ctx, dict) else None
+        if prob_constraints:
+            from core.test_intelligence.constraint_parser import parse_constraint_expressions
+            spec_for_classification, unres = parse_constraint_expressions(
+                prob_constraints,
+                known_parameters=prob_ctx.get("parameters") if isinstance(prob_ctx, dict) else None,
+            )
+            has_supplied = True
+        elif parsed_constraints and isinstance(parsed_constraints, dict) and parsed_constraints.get("raw"):
+            from core.test_intelligence.constraint_parser import parse_constraint_expressions
+            raw_c = parsed_constraints.get("raw")
+            if isinstance(raw_c, list):
+                spec_for_classification, unres = parse_constraint_expressions(
+                    raw_c,
+                    known_parameters=prob_ctx.get("parameters") if isinstance(prob_ctx, dict) else None,
+                )
+                has_supplied = True
+
+        from core.test_intelligence.constraint_parser import classify_candidate
+        from core.test_intelligence.models import ProblemContext
+        ctx_obj = ProblemContext(
+            parameters=prob_ctx.get("parameters", []) if isinstance(prob_ctx, dict) else [],
+            constraint_spec=spec_for_classification,
+        )
+
+        for c_item in candidates:
+            if isinstance(c_item, dict) and (not c_item.get("classification") or c_item.get("classification") == "CONSTRAINT VALIDITY UNKNOWN"):
+                from core.service import parse_test_cases
+                tc_list = parse_test_cases([c_item])
+                if tc_list:
+                    cls_name, cls_reason = classify_candidate(
+                        candidate=tc_list[0],
+                        spec=spec_for_classification,
+                        has_supplied_constraints=has_supplied,
+                        context=ctx_obj,
+                        unresolved_constraints=unres,
+                    )
+                    c_item["classification"] = cls_name
+                    c_item["classification_reason"] = cls_reason
+
+        for r_item in ranked:
+            if isinstance(r_item, dict):
+                cand_sub = r_item.get("candidate")
+                if isinstance(cand_sub, dict) and (not cand_sub.get("classification") or cand_sub.get("classification") == "CONSTRAINT VALIDITY UNKNOWN"):
+                    from core.service import parse_test_cases
+                    tc_list = parse_test_cases([cand_sub])
+                    if tc_list:
+                        cls_name, cls_reason = classify_candidate(
+                            candidate=tc_list[0],
+                            spec=spec_for_classification,
+                            has_supplied_constraints=has_supplied,
+                            context=ctx_obj,
+                            unresolved_constraints=unres,
+                        )
+                        cand_sub["classification"] = cls_name
+                        cand_sub["classification_reason"] = cls_reason
+
+        # 3. Preserve and reconstruct raw_stdin on generated candidates
+        has_baseline_stdin = bool(request.test_cases and any(tc.get("raw_stdin") for tc in request.test_cases if isinstance(tc, dict)))
+        if has_baseline_stdin:
+            for c_item in candidates:
+                if isinstance(c_item, dict) and not c_item.get("raw_stdin") and isinstance(c_item.get("input_data"), dict):
+                    inp = c_item["input_data"]
+                    if len(inp) == 1:
+                        p_val = next(iter(inp.values()))
+                        if isinstance(p_val, (list, tuple)):
+                            c_item["raw_stdin"] = f"{len(p_val)}\n{' '.join(str(x) for x in p_val)}"
+                        elif isinstance(p_val, (int, float, str)):
+                            c_item["raw_stdin"] = str(p_val)
+                    elif len(inp) == 2 and any(k.lower() in ("n", "m", "size", "length") for k in inp):
+                        len_k = next(k for k in inp if k.lower() in ("n", "m", "size", "length"))
+                        arr_k = next(k for k in inp if k != len_k)
+                        arr_v = inp[arr_k]
+                        if isinstance(arr_v, (list, tuple)):
+                            c_item["raw_stdin"] = f"{len(arr_v)}\n{' '.join(str(x) for x in arr_v)}"
+
+            for r_item in ranked:
+                if isinstance(r_item, dict) and isinstance(r_item.get("candidate"), dict):
+                    cand_sub = r_item["candidate"]
+                    if not cand_sub.get("raw_stdin") and isinstance(cand_sub.get("input_data"), dict):
+                        inp = cand_sub["input_data"]
+                        if len(inp) == 1:
+                            p_val = next(iter(inp.values()))
+                            if isinstance(p_val, (list, tuple)):
+                                cand_sub["raw_stdin"] = f"{len(p_val)}\n{' '.join(str(x) for x in p_val)}"
+                            elif isinstance(p_val, (int, float, str)):
+                                cand_sub["raw_stdin"] = str(p_val)
+
+        detected_patterns = (
+            state.accumulated_context.get("detected_patterns")
+            or {}
+        )
+
+        return {
+            "existing_tests_analyzed": len(request.test_cases) if request.test_cases else 0,
+            "coverage_gaps": gaps,
+            "total_gaps": len(gaps),
+            "generated_candidates": candidates[: request.max_candidates or 10],
+            "ranked_candidates": ranked,
+            "ranking_summary": ranking_summary,
+            "detected_patterns": detected_patterns,
+            "retrieved_knowledge": state.accumulated_context.get("retrieved_knowledge", []),
+        }
+
     def _build_system_prompt(self) -> str:
         return (
             "You are the EdgeMind Autonomous Test Intelligence Agent. "
@@ -328,6 +480,13 @@ class AgentOrchestrator:
         ]
         custom_secrets = [s for s in custom_secrets if s and len(s) >= 6]
 
+        # Normalize test cases and parameters for function AST signature
+        if request.test_cases:
+            from core.service import normalize_test_cases_for_signature, parse_test_cases
+            parsed = parse_test_cases(request.test_cases)
+            norm = normalize_test_cases_for_signature(parsed, code=request.code, problem_context=request.problem_context)
+            request.test_cases = [tc.to_dict() for tc in norm]
+
         # Context accessible to tool handlers (e.g. database session)
         tool_context = {
             "db": db,
@@ -336,6 +495,7 @@ class AgentOrchestrator:
             "project_id": str(request.project_id) if request.project_id else None,
             "problem_id": str(request.problem_id) if request.problem_id else None,
             "embedding_provider": self.embedding_provider,
+            "code": request.code,
         }
 
         # Pre-seed baseline deterministic static analysis
@@ -599,6 +759,8 @@ class AgentOrchestrator:
                             state.accumulated_context["gaps"] = tool_output.get("gaps", [])
                         elif tc.name == "generate_candidate_inputs":
                             state.accumulated_context["candidates"] = tool_output.get("candidates", [])
+                            state.accumulated_context["ranked_candidates"] = []
+                            state.accumulated_context["ranking_summary"] = {}
                         elif tc.name == "rank_candidate_inputs":
                             state.accumulated_context["selected_candidates"] = tool_output.get("selected_candidates", [])
                             state.accumulated_context["ranked_candidates"] = tool_output.get("ranked_candidates", [])
@@ -687,33 +849,35 @@ class AgentOrchestrator:
                 static_analysis.setdefault("summary", cr.get("summary", {}))
 
         # Assemble test intelligence section
-        candidates = (
-            state.accumulated_context.get("selected_candidates")
-            or state.accumulated_context.get("candidates")
-            or []
+        has_baseline = bool(request.test_cases and len(request.test_cases) > 0)
+        prob_ctx = request.problem_context if isinstance(request.problem_context, dict) else {}
+        raw_prob_constraints = prob_ctx.get("constraints")
+        parsed_constraints = (
+            state.accumulated_context.get("parsed_constraints")
+            or (state.accumulated_context.get("constraints") if isinstance(state.accumulated_context.get("constraints"), dict) else None)
         )
-        ranked = state.accumulated_context.get("ranked_candidates") or []
-        gaps = state.accumulated_context.get("gaps") or []
-        ranking_summary = state.accumulated_context.get("ranking_summary") or {
-            "total_evaluated": len(candidates),
-            "selection_limit": request.max_candidates or 10,
-        }
-        detected_patterns = (
-            state.accumulated_context.get("detected_patterns")
-            or ("ti_data" in locals() and isinstance(ti_data, dict) and ti_data.get("detected_patterns"))
-            or {}
-        )
+        if not parsed_constraints:
+            if isinstance(raw_prob_constraints, dict):
+                parsed_constraints = raw_prob_constraints
+            elif raw_prob_constraints:
+                parsed_constraints = {
+                    "status": "PARSED",
+                    "total_raw": len(raw_prob_constraints),
+                    "raw": str(raw_prob_constraints),
+                }
+            else:
+                parsed_constraints = {
+                    "status": "UNAVAILABLE",
+                    "total_raw": 0,
+                    "raw": "",
+                }
 
-        test_intelligence = {
-            "existing_tests_analyzed": len(request.test_cases) if request.test_cases else 0,
-            "coverage_gaps": gaps,
-            "total_gaps": len(gaps),
-            "generated_candidates": candidates[: request.max_candidates or 10],
-            "ranked_candidates": ranked,
-            "ranking_summary": ranking_summary,
-            "detected_patterns": detected_patterns,
-            "retrieved_knowledge": state.accumulated_context.get("retrieved_knowledge", []),
-        }
+        test_intelligence = self._finalize_test_intelligence(
+            state=state,
+            request=request,
+            prob_ctx=prob_ctx,
+            parsed_constraints=parsed_constraints,
+        )
 
         total_duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -724,6 +888,21 @@ class AgentOrchestrator:
                 from core.database.models import AnalysisSession
                 from core.database.repositories.report_repository import ReportRepository
 
+                # Derive gaps and candidates counts safely from test_intelligence / accumulated_context
+                ti_gaps = test_intelligence.get("coverage_gaps") if isinstance(test_intelligence, dict) else None
+                if ti_gaps is None and isinstance(state.accumulated_context, dict):
+                    ti_gaps = state.accumulated_context.get("gaps")
+                gaps_count = len(ti_gaps) if isinstance(ti_gaps, (list, tuple, set)) else (
+                    test_intelligence.get("total_gaps", 0) if isinstance(test_intelligence, dict) and isinstance(test_intelligence.get("total_gaps"), int) else 0
+                )
+
+                ti_candidates = test_intelligence.get("generated_candidates") if isinstance(test_intelligence, dict) else None
+                if ti_candidates is None and isinstance(state.accumulated_context, dict):
+                    ti_candidates = state.accumulated_context.get("candidates") or state.accumulated_context.get("selected_candidates")
+                candidates_count = len(ti_candidates) if isinstance(ti_candidates, (list, tuple, set)) else (
+                    test_intelligence.get("total_candidates", 0) if isinstance(test_intelligence, dict) and isinstance(test_intelligence.get("total_candidates"), int) else 0
+                )
+
                 # Create parent AnalysisSession row to satisfy foreign key constraint
                 analysis_session = AnalysisSession(
                     id=session_id,
@@ -732,8 +911,8 @@ class AgentOrchestrator:
                     analysis_mode="AGENTIC" if execution_mode == "AI_AGENT" else "STATIC",
                     language="python",
                     analysis_status=state.status.value,
-                    gaps_detected=len(gaps),
-                    candidates_generated=len(candidates),
+                    gaps_detected=gaps_count,
+                    candidates_generated=candidates_count,
                     duration_ms=total_duration_ms,
                 )
                 db.add(analysis_session)
@@ -804,29 +983,6 @@ class AgentOrchestrator:
             state.usage_records,
             default_model=request.model or getattr(self.provider, "_model", "qwen3:4b" if getattr(self.provider, "name", "") == "ollama" else "gpt-4o-mini"),
         )
-
-        has_baseline = bool(request.test_cases and len(request.test_cases) > 0)
-        prob_ctx = request.problem_context if isinstance(request.problem_context, dict) else {}
-        raw_prob_constraints = prob_ctx.get("constraints")
-        parsed_constraints = (
-            state.accumulated_context.get("parsed_constraints")
-            or (state.accumulated_context.get("constraints") if isinstance(state.accumulated_context.get("constraints"), dict) else None)
-        )
-        if not parsed_constraints:
-            if isinstance(raw_prob_constraints, dict):
-                parsed_constraints = raw_prob_constraints
-            elif raw_prob_constraints:
-                parsed_constraints = {
-                    "status": "PARSED",
-                    "total_raw": len(raw_prob_constraints),
-                    "raw": str(raw_prob_constraints),
-                }
-            else:
-                parsed_constraints = {
-                    "status": "UNAVAILABLE",
-                    "total_raw": 0,
-                    "raw": "",
-                }
 
         raw_params = (
             state.accumulated_context.get("identified_parameters")
@@ -939,6 +1095,13 @@ class AgentOrchestrator:
             },
         )
 
+        # Normalize test cases and parameters for function AST signature
+        if request.test_cases:
+            from core.service import normalize_test_cases_for_signature, parse_test_cases
+            parsed = parse_test_cases(request.test_cases)
+            norm = normalize_test_cases_for_signature(parsed, code=request.code, problem_context=request.problem_context)
+            request.test_cases = [tc.to_dict() for tc in norm]
+
         system_prompt = self._build_system_prompt()
         user_prompt = self._build_user_prompt(request)
 
@@ -1014,6 +1177,7 @@ class AgentOrchestrator:
             "project_id": request.project_id,
             "session_id": session_id,
             "embedding_provider": self.embedding_provider,
+            "code": request.code,
         }
 
         execution_mode = "AI_AGENT"
@@ -1337,6 +1501,8 @@ class AgentOrchestrator:
                             state.accumulated_context["gaps"] = tool_output.get("gaps", [])
                         elif tc.name == "generate_candidate_inputs":
                             state.accumulated_context["candidates"] = tool_output.get("candidates", [])
+                            state.accumulated_context["ranked_candidates"] = []
+                            state.accumulated_context["ranking_summary"] = {}
                         elif tc.name == "rank_candidate_inputs":
                             state.accumulated_context["selected_candidates"] = tool_output.get("selected_candidates", [])
                             state.accumulated_context["ranked_candidates"] = tool_output.get("ranked_candidates", [])
@@ -1423,33 +1589,35 @@ class AgentOrchestrator:
                 static_analysis.setdefault("warnings", cr.get("warnings", []))
                 static_analysis.setdefault("summary", cr.get("summary", {}))
 
-        candidates = (
-            state.accumulated_context.get("selected_candidates")
-            or state.accumulated_context.get("candidates")
-            or []
+        has_baseline = bool(request.test_cases and len(request.test_cases) > 0)
+        prob_ctx = request.problem_context if isinstance(request.problem_context, dict) else {}
+        raw_prob_constraints = prob_ctx.get("constraints")
+        parsed_constraints = (
+            state.accumulated_context.get("parsed_constraints")
+            or (state.accumulated_context.get("constraints") if isinstance(state.accumulated_context.get("constraints"), dict) else None)
         )
-        ranked = state.accumulated_context.get("ranked_candidates") or []
-        gaps = state.accumulated_context.get("gaps") or []
-        ranking_summary = state.accumulated_context.get("ranking_summary") or {
-            "total_evaluated": len(candidates),
-            "selection_limit": request.max_candidates or 10,
-        }
-        detected_patterns = (
-            state.accumulated_context.get("detected_patterns")
-            or ("ti_data" in locals() and isinstance(ti_data, dict) and ti_data.get("detected_patterns"))
-            or {}
-        )
+        if not parsed_constraints:
+            if isinstance(raw_prob_constraints, dict):
+                parsed_constraints = raw_prob_constraints
+            elif raw_prob_constraints:
+                parsed_constraints = {
+                    "status": "PARSED",
+                    "total_raw": len(raw_prob_constraints),
+                    "raw": str(raw_prob_constraints),
+                }
+            else:
+                parsed_constraints = {
+                    "status": "UNAVAILABLE",
+                    "total_raw": 0,
+                    "raw": "",
+                }
 
-        test_intelligence = {
-            "existing_tests_analyzed": len(request.test_cases) if request.test_cases else 0,
-            "coverage_gaps": gaps,
-            "total_gaps": len(gaps),
-            "generated_candidates": candidates[: request.max_candidates or 10],
-            "ranked_candidates": ranked,
-            "ranking_summary": ranking_summary,
-            "detected_patterns": detected_patterns,
-            "retrieved_knowledge": state.accumulated_context.get("retrieved_knowledge", []),
-        }
+        test_intelligence = self._finalize_test_intelligence(
+            state=state,
+            request=request,
+            prob_ctx=prob_ctx,
+            parsed_constraints=parsed_constraints,
+        )
 
         total_duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -1459,6 +1627,21 @@ class AgentOrchestrator:
                 from core.database.models import AnalysisSession
                 from core.database.repositories.report_repository import ReportRepository
 
+                # Derive gaps and candidates counts safely from test_intelligence / accumulated_context
+                ti_gaps = test_intelligence.get("coverage_gaps") if isinstance(test_intelligence, dict) else None
+                if ti_gaps is None and isinstance(state.accumulated_context, dict):
+                    ti_gaps = state.accumulated_context.get("gaps")
+                gaps_count = len(ti_gaps) if isinstance(ti_gaps, (list, tuple, set)) else (
+                    test_intelligence.get("total_gaps", 0) if isinstance(test_intelligence, dict) and isinstance(test_intelligence.get("total_gaps"), int) else 0
+                )
+
+                ti_candidates = test_intelligence.get("generated_candidates") if isinstance(test_intelligence, dict) else None
+                if ti_candidates is None and isinstance(state.accumulated_context, dict):
+                    ti_candidates = state.accumulated_context.get("candidates") or state.accumulated_context.get("selected_candidates")
+                candidates_count = len(ti_candidates) if isinstance(ti_candidates, (list, tuple, set)) else (
+                    test_intelligence.get("total_candidates", 0) if isinstance(test_intelligence, dict) and isinstance(test_intelligence.get("total_candidates"), int) else 0
+                )
+
                 analysis_session = AnalysisSession(
                     id=session_id,
                     user_id=current_user.id,
@@ -1466,8 +1649,8 @@ class AgentOrchestrator:
                     analysis_mode="AGENTIC" if execution_mode == "AI_AGENT" else "STATIC",
                     language="python",
                     analysis_status=state.status.value,
-                    gaps_detected=len(gaps),
-                    candidates_generated=len(candidates),
+                    gaps_detected=gaps_count,
+                    candidates_generated=candidates_count,
                     duration_ms=total_duration_ms,
                 )
                 db.add(analysis_session)
@@ -1538,29 +1721,6 @@ class AgentOrchestrator:
             state.usage_records,
             default_model=request.model or getattr(self.provider, "_model", "qwen3:4b" if getattr(self.provider, "name", "") == "ollama" else "gpt-4o-mini"),
         )
-
-        has_baseline = bool(request.test_cases and len(request.test_cases) > 0)
-        prob_ctx = request.problem_context if isinstance(request.problem_context, dict) else {}
-        raw_prob_constraints = prob_ctx.get("constraints")
-        parsed_constraints = (
-            state.accumulated_context.get("parsed_constraints")
-            or (state.accumulated_context.get("constraints") if isinstance(state.accumulated_context.get("constraints"), dict) else None)
-        )
-        if not parsed_constraints:
-            if isinstance(raw_prob_constraints, dict):
-                parsed_constraints = raw_prob_constraints
-            elif raw_prob_constraints:
-                parsed_constraints = {
-                    "status": "PARSED",
-                    "total_raw": len(raw_prob_constraints),
-                    "raw": str(raw_prob_constraints),
-                }
-            else:
-                parsed_constraints = {
-                    "status": "UNAVAILABLE",
-                    "total_raw": 0,
-                    "raw": "",
-                }
 
         raw_params = (
             state.accumulated_context.get("identified_parameters")

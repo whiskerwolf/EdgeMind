@@ -100,3 +100,13 @@ class MessageResponse(BaseModel):
 
     message: str
 
+
+class OAuthAuthorizationResponse(BaseModel):
+    """Response carrying a provider OAuth 2.0 authorization URL and CSRF state TTL."""
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str = Field(..., description="OAuth provider identifier (e.g. 'google')")
+    authorization_url: str = Field(..., description="Provider authorization redirect URL")
+    expires_in: int = Field(..., description="State token expiration in seconds")
+
+

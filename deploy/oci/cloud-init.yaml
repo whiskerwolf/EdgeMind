@@ -59,10 +59,13 @@ runcmd:
   - ufw allow 443/tcp comment 'Caddy HTTPS EdgeMind API'
   - ufw --force enable
 
-  # Prepare EdgeMind application directories
+  # Prepare EdgeMind application and maintenance directories
   - mkdir -p /opt/edgemind/deploy/oci/scripts
+  - mkdir -p /opt/edgemind/deploy/oci/systemd
   - mkdir -p /opt/edgemind/backups
+  - mkdir -p /etc/edgemind
   - chown -R ubuntu:ubuntu /opt/edgemind
   - chmod 700 /opt/edgemind/backups
+  - chmod 750 /etc/edgemind
 
 final_message: "EdgeMind OCI Always Free ARM64 cloud-init initialization completed successfully after $UPTIME seconds."

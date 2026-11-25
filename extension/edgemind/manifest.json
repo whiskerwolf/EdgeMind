@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "EdgeMind",
   "version": "1.0.0",
-  "description": "Adaptive static code analysis and edge-case test intelligence for Python on LeetCode.",
+  "description": "Adaptive static code analysis and edge-case test intelligence for Python on LeetCode, HackerRank, and Codeforces.",
   "icons": {
     "16": "icons/icon16.png",
     "24": "icons/icon24.png",
@@ -38,7 +38,11 @@
     {
       "matches": [
         "https://leetcode.com/*",
-        "https://*.leetcode.com/*"
+        "https://*.leetcode.com/*",
+        "https://www.hackerrank.com/*",
+        "https://*.hackerrank.com/*",
+        "https://codeforces.com/*",
+        "https://*.codeforces.com/*"
       ],
       "js": [
         "scripts/content.js"

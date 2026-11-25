@@ -1,0 +1,17 @@
+[Unit]
+Description=EdgeMind PostgreSQL Compressed Backup Job
+Documentation=https://github.com/whiskerwolf/EdgeMind/blob/main/deploy/oci/README.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/edgemind/deploy/oci
+EnvironmentFile=-/etc/edgemind/maintenance.env
+ExecStart=/opt/edgemind/deploy/oci/scripts/backup-postgres.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=edgemind-backup
+NoNewPrivileges=true
+PrivateTmp=true
+TimeoutStartSec=1800

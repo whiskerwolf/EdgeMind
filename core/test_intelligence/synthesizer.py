@@ -593,6 +593,8 @@ class TargetedTestSynthesizer:
                 candidates.append(cand)
 
         # 5. Rank and select candidates deterministically
+        has_baseline_stdin = bool(test_cases and any(getattr(tc, "raw_stdin", None) for tc in test_cases))
+
         if self.ranker is not None:
             effective_limit = (
                 max_candidates
@@ -605,18 +607,29 @@ class TargetedTestSynthesizer:
                 gaps=target_gaps,
                 max_selected=effective_limit,
             )
-            return ranking_result.selected_candidates
+            res_cands = ranking_result.selected_candidates
+        else:
+            sorted_candidates = sorted(
+                candidates,
+                key=lambda c: (
+                    -c.relevance_score,
+                    c.target_gap.value if c.target_gap else "",
+                    c.id,
+                ),
+            )
+            res_cands = sorted_candidates[:limit]
 
-        sorted_candidates = sorted(
-            candidates,
-            key=lambda c: (
-                -c.relevance_score,
-                c.target_gap.value if c.target_gap else "",
-                c.id,
-            ),
-        )
+        if has_baseline_stdin:
+            for cand in res_cands:
+                if not getattr(cand, "raw_stdin", None) and isinstance(cand.input_data, dict):
+                    if len(cand.input_data) == 1:
+                        p_val = next(iter(cand.input_data.values()))
+                        if isinstance(p_val, (list, tuple)):
+                            cand.raw_stdin = f"{len(p_val)}\n{' '.join(str(x) for x in p_val)}"
+                        elif isinstance(p_val, (int, float, str)):
+                            cand.raw_stdin = str(p_val)
 
-        return sorted_candidates[:limit]
+        return res_cands
 
     def synthesize_and_rank(
         self,

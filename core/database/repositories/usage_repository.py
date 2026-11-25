@@ -183,14 +183,91 @@ class UsageRepository:
 
         result = await self.db.execute(stmt)
         records = list(result.scalars().all())
+        agg = self._aggregate_records(records, period=period)
+        return {
+            "total_prompt_tokens": agg["total_prompt_tokens"],
+            "total_completion_tokens": agg["total_completion_tokens"],
+            "total_tokens": agg["total_tokens"],
+            "total_estimated_cost_usd": agg["total_estimated_cost_usd"],
+            "requests_count": agg["requests_count"],
+            "period": period,
+            "by_model": agg["by_model"],
+            "by_source": agg["by_source"],
+            "is_estimated_cost_known": agg["is_estimated_cost_known"],
+        }
 
+    async def get_admin_usage_analytics(
+        self,
+        period: str = "month",
+        user_id: Optional[uuid.UUID] = None,
+        project_id: Optional[uuid.UUID] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Aggregate cross-tenant token usage and estimated API costs for admin analytics.
+
+        Caller MUST enforce admin RBAC prior to invoking this method.
+        No PII (emails, passwords), raw prompts, user code, or API credentials are returned.
+        """
+        stmt = select(AiTokenUsage)
+        if user_id is not None:
+            stmt = stmt.where(AiTokenUsage.user_id == user_id)
+        if project_id is not None:
+            stmt = stmt.where(AiTokenUsage.project_id == project_id)
+        if provider is not None:
+            stmt = stmt.where(AiTokenUsage.provider == provider)
+        if model is not None:
+            stmt = stmt.where(AiTokenUsage.model == model)
+
+        now = datetime.now(timezone.utc)
+        if period == "day":
+            stmt = stmt.where(AiTokenUsage.created_at >= now - timedelta(days=1))
+        elif period == "month":
+            stmt = stmt.where(AiTokenUsage.created_at >= now - timedelta(days=30))
+
+        result = await self.db.execute(stmt)
+        records = list(result.scalars().all())
+        agg = self._aggregate_records(records, period=period)
+        agg["filters"] = {
+            "user_id": str(user_id) if user_id is not None else None,
+            "project_id": str(project_id) if project_id is not None else None,
+            "provider": provider,
+            "model": model,
+        }
+        return agg
+
+    @staticmethod
+    def _accumulate_bucket(bucket: Dict[str, Any], record: AiTokenUsage) -> None:
+        """Accumulate token and Decimal cost metrics into a named grouping bucket."""
+        bucket["prompt_tokens"] += record.prompt_tokens
+        bucket["completion_tokens"] += record.completion_tokens
+        bucket["total_tokens"] += record.total_tokens
+        bucket["requests_count"] += 1
+        if record.estimated_cost_usd is not None:
+            current_cost = bucket["estimated_cost_usd"] or Decimal("0.0")
+            bucket["estimated_cost_usd"] = current_cost + Decimal(str(record.estimated_cost_usd))
+            bucket["is_estimated_cost_known"] = True
+
+    @classmethod
+    def _aggregate_records(
+        cls,
+        records: List[AiTokenUsage],
+        period: str,
+    ) -> Dict[str, Any]:
+        """Compute exact totals and model/provider/source/tenant breakdowns from ledger rows."""
         total_prompt = 0
         total_completion = 0
         total_tokens = 0
         total_cost_dec = Decimal("0.0")
         has_any_cost = False
         by_model: Dict[str, Dict[str, Any]] = {}
+        by_provider: Dict[str, Dict[str, Any]] = {}
         by_source: Dict[str, int] = {}
+        by_user_map: Dict[Optional[str], Dict[str, Any]] = {}
+        distinct_users = set()
+        distinct_projects = set()
+        anonymous_requests = 0
 
         for r in records:
             total_prompt += r.prompt_tokens
@@ -201,10 +278,10 @@ class UsageRepository:
                 has_any_cost = True
                 total_cost_dec += Decimal(str(r.estimated_cost_usd))
 
-            m = r.model or "unknown"
-            if m not in by_model:
-                by_model[m] = {
-                    "model": m,
+            model_key = r.model or "unknown"
+            if model_key not in by_model:
+                by_model[model_key] = {
+                    "model": model_key,
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
@@ -212,26 +289,64 @@ class UsageRepository:
                     "estimated_cost_usd": None,
                     "is_estimated_cost_known": False,
                 }
-            by_model[m]["prompt_tokens"] += r.prompt_tokens
-            by_model[m]["completion_tokens"] += r.completion_tokens
-            by_model[m]["total_tokens"] += r.total_tokens
-            by_model[m]["requests_count"] += 1
-            if r.estimated_cost_usd is not None:
-                current_cost = by_model[m]["estimated_cost_usd"] or Decimal("0.0")
-                by_model[m]["estimated_cost_usd"] = current_cost + Decimal(str(r.estimated_cost_usd))
-                by_model[m]["is_estimated_cost_known"] = True
+            cls._accumulate_bucket(by_model[model_key], r)
+
+            provider_key = r.provider or "unknown"
+            if provider_key not in by_provider:
+                by_provider[provider_key] = {
+                    "provider": provider_key,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "requests_count": 0,
+                    "estimated_cost_usd": None,
+                    "is_estimated_cost_known": False,
+                }
+            cls._accumulate_bucket(by_provider[provider_key], r)
 
             src = r.usage_source or "UNKNOWN"
             by_source[src] = by_source.get(src, 0) + 1
 
+            if r.user_id is not None:
+                distinct_users.add(r.user_id)
+                user_key: Optional[str] = str(r.user_id)
+            else:
+                anonymous_requests += 1
+                user_key = None
+
+            if r.project_id is not None:
+                distinct_projects.add(r.project_id)
+
+            if user_key not in by_user_map:
+                by_user_map[user_key] = {
+                    "user_id": user_key,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "requests_count": 0,
+                    "estimated_cost_usd": None,
+                    "is_estimated_cost_known": False,
+                }
+            cls._accumulate_bucket(by_user_map[user_key], r)
+
+        by_user = sorted(
+            by_user_map.values(),
+            key=lambda entry: (-entry["total_tokens"], entry["user_id"] or ""),
+        )
+
         return {
+            "period": period,
             "total_prompt_tokens": total_prompt,
             "total_completion_tokens": total_completion,
             "total_tokens": total_tokens,
             "total_estimated_cost_usd": total_cost_dec if has_any_cost else None,
+            "is_estimated_cost_known": has_any_cost,
             "requests_count": len(records),
-            "period": period,
+            "distinct_users_count": len(distinct_users),
+            "distinct_projects_count": len(distinct_projects),
+            "anonymous_requests_count": anonymous_requests,
+            "by_provider": by_provider,
             "by_model": by_model,
             "by_source": by_source,
-            "is_estimated_cost_known": has_any_cost,
+            "by_user": by_user,
         }

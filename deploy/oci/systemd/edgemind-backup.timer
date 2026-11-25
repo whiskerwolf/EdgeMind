@@ -1,0 +1,12 @@
+[Unit]
+Description=Run EdgeMind PostgreSQL Backup Daily at 02:00 UTC
+Documentation=https://github.com/whiskerwolf/EdgeMind/blob/main/deploy/oci/README.md
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=edgemind-backup.service
+
+[Install]
+WantedBy=timers.target

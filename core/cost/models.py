@@ -129,3 +129,59 @@ class UsageSummaryResponse(BaseModel):
     by_model: Dict[str, Any] = Field(default_factory=dict)
     by_source: Dict[str, int] = Field(default_factory=dict)
     is_estimated_cost_known: bool = False
+
+
+class ProviderUsageSummary(BaseModel):
+    """Aggregated token and cost metrics for a single AI provider."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    provider: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    requests_count: int = 0
+    estimated_cost_usd: Optional[Decimal] = None
+    is_estimated_cost_known: bool = False
+
+
+class TenantUsageSummary(BaseModel):
+    """Pseudonymized per-tenant usage aggregate (exposes only user UUID, never PII or secrets)."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    user_id: Optional[str] = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    requests_count: int = 0
+    estimated_cost_usd: Optional[Decimal] = None
+    is_estimated_cost_known: bool = False
+
+
+class AdminUsageFilters(BaseModel):
+    """Active query filter scope echoed in admin usage analytics responses."""
+
+    user_id: Optional[str] = None
+    project_id: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+class AdminUsageAnalyticsResponse(BaseModel):
+    """Administrator-only cross-tenant AI token usage and cost analytics response."""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    period: str = "month"
+    filters: AdminUsageFilters = Field(default_factory=AdminUsageFilters)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_estimated_cost_usd: Optional[Decimal] = None
+    is_estimated_cost_known: bool = False
+    requests_count: int = 0
+    distinct_users_count: int = 0
+    distinct_projects_count: int = 0
+    anonymous_requests_count: int = 0
+    by_provider: Dict[str, ProviderUsageSummary] = Field(default_factory=dict)
+    by_model: Dict[str, ModelUsageSummary] = Field(default_factory=dict)
+    by_source: Dict[str, int] = Field(default_factory=dict)
+    by_user: List[TenantUsageSummary] = Field(default_factory=list)

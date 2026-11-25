@@ -5,13 +5,13 @@ Orchestrates user management, credential verification, session issuance,
 refresh token rotation with reuse detection, and administrator bootstrap.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import logging
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import uuid
 
 import jwt
-from sqlalchemy import select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth.security import (
@@ -312,3 +312,64 @@ class AuthService:
         await self.db.flush()
         logger.info(f"Successfully bootstrapped initial administrator account: {normalized_email}")
         return admin
+
+    async def cleanup_expired_refresh_tokens(
+        self,
+        expired_grace_days: int = 1,
+        revoked_grace_days: int = 7,
+        dry_run: bool = False,
+        now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Safely prune expired and aged revoked refresh token records.
+
+        Deletion guarantees:
+        - Active tokens (`is_revoked=False` and `expires_at >= expired_cutoff`) are never deleted.
+        - Recently revoked unexpired tokens remain intact until expired or past
+          `revoked_grace_days` so token reuse detection stays effective.
+        """
+        if expired_grace_days < 0:
+            raise ValueError("expired_grace_days must be >= 0")
+        if revoked_grace_days < 0:
+            raise ValueError("revoked_grace_days must be >= 0")
+
+        reference_now = now or datetime.now(timezone.utc)
+        if reference_now.tzinfo is None:
+            reference_now = reference_now.replace(tzinfo=timezone.utc)
+
+        expired_cutoff = reference_now - timedelta(days=expired_grace_days)
+        revoked_cutoff = reference_now - timedelta(days=revoked_grace_days)
+
+        eligible_filter = or_(
+            RefreshToken.expires_at < expired_cutoff,
+            and_(
+                RefreshToken.is_revoked.is_(True),
+                RefreshToken.expires_at < reference_now,
+            ),
+            and_(
+                RefreshToken.is_revoked.is_(True),
+                RefreshToken.revoked_at.is_not(None),
+                RefreshToken.revoked_at < revoked_cutoff,
+            ),
+        )
+
+        if dry_run:
+            count_stmt = select(func.count(RefreshToken.id)).where(eligible_filter)
+            eligible_count = int((await self.db.execute(count_stmt)).scalar_one() or 0)
+            deleted_count = 0
+        else:
+            del_stmt = delete(RefreshToken).where(eligible_filter)
+            result = await self.db.execute(del_stmt)
+            await self.db.flush()
+            deleted_count = int(result.rowcount or 0)
+            eligible_count = deleted_count
+
+        return {
+            "dry_run": dry_run,
+            "deleted_count": deleted_count,
+            "eligible_count": eligible_count,
+            "expired_grace_days": expired_grace_days,
+            "revoked_grace_days": revoked_grace_days,
+            "expired_cutoff": expired_cutoff.isoformat(),
+            "revoked_cutoff": revoked_cutoff.isoformat(),
+        }

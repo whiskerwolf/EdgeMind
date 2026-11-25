@@ -41,9 +41,11 @@ from core.database.repositories import (
 )
 from core.reports.builder import build_analysis_report_doc
 from core.routes import (
+    admin_router,
     agent_router,
     analyses_router,
     auth_router,
+    diagnose_router,
     problems_router,
     projects_router,
     reports_router,
@@ -169,11 +171,13 @@ async def request_tracing_and_timing_middleware(request: Request, call_next):
 # -----------------------------------------------------------------------------
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(users_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(problems_router, prefix="/api/v1")
 app.include_router(analyses_router, prefix="/api/v1")
 app.include_router(reports_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
+app.include_router(diagnose_router, prefix="/api/v1")
 
 
 # -----------------------------------------------------------------------------
@@ -314,6 +318,7 @@ async def analyze_endpoint(request: Request):
         req_model = AnalyzeCodeRequest(
             code=code,
             filename=str(filename) if filename is not None else settings.default_filename,
+            language=body.get("language"),
             static_only=True,
         )
     except Exception as val_err:
@@ -323,7 +328,12 @@ async def analyze_endpoint(request: Request):
         )
 
     try:
-        report = analyze_code(code=req_model.code, filename=req_model.filename, static_only=True)
+        report = analyze_code(
+            code=req_model.code,
+            filename=req_model.filename,
+            static_only=True,
+            language=req_model.language,
+        )
         return JSONResponse(status_code=200, content=report)
     except (TypeError, ValueError) as err:
         return JSONResponse(

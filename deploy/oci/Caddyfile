@@ -1,5 +1,6 @@
 # EdgeMind Production Caddyfile
-# Handles automatic TLS termination, reverse proxy to backend, security headers, and compression.
+# Handles automatic TLS termination, production React SPA serving with fallback,
+# reverse proxy to FastAPI backend (/api/*, /health), security headers, and compression.
 
 {
     # Global options
@@ -19,7 +20,7 @@
         max_size 10MB
     }
 
-    # Compression for text, JSON, and streaming responses
+    # Compression for text, JSON, static bundles, and streaming responses
     encode zstd gzip
 
     # Production Security Response Headers
@@ -32,17 +33,41 @@
         -Server
     }
 
-    # Reverse Proxy to FastAPI Backend container on private internal Docker network
-    reverse_proxy backend:8000 {
-        header_up Host {host}
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
+    # 1. Backend Health Endpoint
+    handle /health {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
 
-        # Health check configuration for upstream backend
-        health_uri /health
-        health_interval 10s
-        health_timeout 3s
+    # 2. Backend REST & SSE Streaming API Endpoints
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+
+            # Disable response buffering so SSE tokens stream immediately
+            flush_interval -1
+
+            # Health check configuration for upstream backend
+            health_uri /health
+            health_interval 10s
+            health_timeout 3s
+        }
+    }
+
+    # 3. Frontend Production React SPA + Client-Side Routing Fallback
+    handle {
+        root * /srv/web
+        @hashed_assets path /assets/*
+        header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+        try_files {path} /index.html
+        file_server
     }
 
     # Access and Error Logging

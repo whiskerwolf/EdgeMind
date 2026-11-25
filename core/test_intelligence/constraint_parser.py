@@ -54,9 +54,13 @@ def normalize_latex(text: str) -> str:
             break
         s = new_s
 
+    s = s.replace("$", "")
+
     # 2. LaTeX operators
     s = re.sub(r"\\le\b|\\leq\b", "<=", s)
     s = re.sub(r"\\ge\b|\\geq\b", ">=", s)
+    s = re.sub(r"\\lt\b", "<", s)
+    s = re.sub(r"\\gt\b", ">", s)
     s = re.sub(r"\\times\b|\\cdot\b", "*", s)
     s = re.sub(r"\\ne\b|\\neq\b", "!=", s)
 
@@ -196,6 +200,18 @@ def parse_constraint_expressions(
             known_params.append(str(p.name).lower())
         elif p is not None:
             known_params.append(str(p).lower())
+
+    # Expand any newline-delimited raw constraint strings
+    expanded_raw: List[str] = []
+    for r in raw_constraints:
+        if isinstance(r, str):
+            for sub_line in r.split("\n"):
+                sub_clean = sub_line.strip()
+                if sub_clean:
+                    expanded_raw.append(sub_clean)
+        elif r is not None:
+            expanded_raw.append(str(r))
+    raw_constraints = expanded_raw
 
     param_specs: Dict[str, ParamConstraintSpec] = {
         p: ParamConstraintSpec(name=p) for p in known_params
@@ -443,6 +459,8 @@ def parse_constraint_expressions(
                         ))
                     elif len(mid_tokens) > 1:
                         matched = True
+                        indexed_params = []
+                        scalar_params = []
                         for token in mid_tokens:
                             if any(token.endswith(sfx) for sfx in (".length", ".size")):
                                 p = token.split(".")[0].strip()
@@ -453,6 +471,7 @@ def parse_constraint_expressions(
                                 spec.max_length = int(high_val) if spec.max_length is None else max(spec.max_length, int(high_val))
                             elif "[" in token:
                                 p = token.split("[")[0].strip()
+                                indexed_params.append(p)
                                 if p not in param_specs: param_specs[p] = ParamConstraintSpec(name=p)
                                 param_specs[p].min_value = low_val
                                 param_specs[p].max_value = high_val
@@ -460,11 +479,45 @@ def parse_constraint_expressions(
                                 spec.max_value = high_val if spec.max_value is None else max(spec.max_value, high_val)
                             else:
                                 p = token
+                                scalar_params.append(p)
                                 if p not in param_specs: param_specs[p] = ParamConstraintSpec(name=p)
                                 param_specs[p].min_value = low_val
                                 param_specs[p].max_value = high_val
                                 spec.min_value = low_val if spec.min_value is None else min(spec.min_value, low_val)
                                 spec.max_value = high_val if spec.max_value is None else max(spec.max_value, high_val)
+
+                        # When a scalar bound (e.g. n) accompanies an indexed array (e.g. ar[i]),
+                        # bind scalar bounds to the array's collection length if valid length scalar
+                        length_scalar_names = {"n", "m", "length", "size", "k"}
+                        legit_length_scalars = [sp for sp in scalar_params if sp.lower() in length_scalar_names]
+                        if (
+                            indexed_params
+                            and legit_length_scalars
+                            and low_val is not None
+                            and high_val is not None
+                            and low_val >= 0
+                            and high_val >= 0
+                        ):
+                            int_low = int(low_val)
+                            int_high = int(high_val)
+                            for arr_p in indexed_params:
+                                if arr_p not in param_specs:
+                                    param_specs[arr_p] = ParamConstraintSpec(name=arr_p)
+                                param_specs[arr_p].min_length = int_low if param_specs[arr_p].min_length is None else max(param_specs[arr_p].min_length, int_low)
+                                param_specs[arr_p].max_length = int_high if param_specs[arr_p].max_length is None else min(param_specs[arr_p].max_length, int_high)
+                                if int_low >= 1:
+                                    param_specs[arr_p].is_non_empty = True
+                                spec.min_length = int_low if spec.min_length is None else max(spec.min_length, int_low)
+                                spec.max_length = int_high if spec.max_length is None else min(spec.max_length, int_high)
+                                for sp in legit_length_scalars:
+                                    cross_constraints.append(CrossParameterConstraint(
+                                        name="ARRAY_LENGTH_BOUND",
+                                        description=f"Parameter '{sp}' denotes the length of '{arr_p}' ({low_s} <= {sp} <= {high_s})",
+                                        parameters_involved=[sp, arr_p],
+                                        relation_type="LENGTH_EQUAL",
+                                        expression=f"{sp} == len({arr_p})"
+                                    ))
+
                         parsed_constraints.append(ParsedConstraint(
                             raw_text=line, normalized_text=cleaned, constraint_type="MULTI_VARIABLE_INEQUALITY",
                             lower_bound=low_val, upper_bound=high_val, confidence=1.0
@@ -531,6 +584,11 @@ def parse_constraint_expressions(
                                     matched_param = p
                                     break
 
+                            if not matched_param:
+                                m_id = re.match(r"^\s*([a-zA-Z_]\w*)(?:\[.*?\])?\s*$", expr_clean)
+                                if m_id:
+                                    matched_param = m_id.group(1).lower()
+
                             if is_elem:
                                 spec.min_value = low_val
                                 spec.max_value = high_val
@@ -540,8 +598,38 @@ def parse_constraint_expressions(
 
                             if matched_param:
                                 if matched_param not in param_specs: param_specs[matched_param] = ParamConstraintSpec(name=matched_param)
-                                param_specs[matched_param].min_value = low_val
-                                param_specs[matched_param].max_value = high_val
+                                if is_elem:
+                                    param_specs[matched_param].min_value = low_val
+                                    param_specs[matched_param].max_value = high_val
+                                else:
+                                    param_specs[matched_param].min_value = low_val
+                                    param_specs[matched_param].max_value = high_val
+                                    # When a scalar bound (e.g. n) represents array length, map to collection parameters
+                                    if (
+                                        matched_param in ("n", "m", "length", "size", "k")
+                                        and low_val is not None
+                                        and high_val is not None
+                                        and low_val >= 0
+                                        and high_val >= 0
+                                    ):
+                                        int_low = int(low_val)
+                                        int_high = int(high_val)
+                                        spec.min_length = int_low if spec.min_length is None else max(spec.min_length, int_low)
+                                        spec.max_length = int_high if spec.max_length is None else min(spec.max_length, int_high)
+                                        target_colls = [p for p in known_params if p != matched_param]
+                                        for coll_p in target_colls:
+                                            if coll_p not in param_specs: param_specs[coll_p] = ParamConstraintSpec(name=coll_p)
+                                            param_specs[coll_p].min_length = int_low if param_specs[coll_p].min_length is None else max(param_specs[coll_p].min_length, int_low)
+                                            param_specs[coll_p].max_length = int_high if param_specs[coll_p].max_length is None else min(param_specs[coll_p].max_length, int_high)
+                                            if int_low >= 1: param_specs[coll_p].is_non_empty = True
+                                            cross_constraints.append(CrossParameterConstraint(
+                                                name="ARRAY_LENGTH_BOUND",
+                                                description=f"Parameter '{matched_param}' denotes the length of '{coll_p}' ({int_low} <= {matched_param} <= {int_high})",
+                                                parameters_involved=[matched_param, coll_p],
+                                                relation_type="LENGTH_EQUAL",
+                                                expression=f"{matched_param} == len({coll_p})",
+                                                is_enforceable=True,
+                                            ))
 
                             matched = True
 

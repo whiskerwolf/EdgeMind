@@ -37,6 +37,67 @@ describe('ApiClient', () => {
     );
   });
 
+  it('posts static code analysis payload to /api/v1/analyze', async () => {
+    const mockReport = {
+      file_path: 'test.py',
+      file: 'test.py',
+      overall_status: 'PASS',
+      status: 'PASS',
+      score: 100,
+      total_errors: 0,
+      total_warnings: 0,
+      syntax_status: 'PASS',
+      runtime_status: 'SKIPPED',
+      logic_status: 'PASS',
+      quality_status: 'PASS',
+      complexity_status: 'PASS',
+      errors: [],
+      warnings: [],
+      summary: {
+        syntax: 'PASS',
+        runtime: 'SKIPPED',
+        logic: 'PASS',
+        quality: 'PASS',
+        complexity: 'PASS',
+      },
+    };
+
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (h: string) => (h === 'content-type' ? 'application/json' : null),
+      },
+      json: async () => mockReport,
+    });
+
+    const result = await client.analyzeCode({ code: 'x = 1', filename: 'test.py' });
+    expect(result.score).toBe(100);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/api/v1/analyze',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ code: 'x = 1', filename: 'test.py', static_only: true }),
+      })
+    );
+  });
+
+  it('fetches recent analyses with bounded limit', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (h: string) => (h === 'content-type' ? 'application/json' : null),
+      },
+      json: async () => [],
+    });
+
+    const result = await client.getRecentAnalyses(5);
+    expect(result).toEqual([]);
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:8000/api/v1/analyses/report?skip=0&limit=5',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
   it('normalizes HTTP 500 error responses into ApiError', async () => {
     const errorBody = { error: 'Internal Server Error', detail: 'Database unreachable' };
     globalThis.fetch = vi.fn().mockResolvedValue({

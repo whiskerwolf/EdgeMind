@@ -4,35 +4,91 @@ import { Logger } from '../utils/logger';
 import { validateEditorSelection } from '../utils/editorValidator';
 import { formatReportOutput, formatSummaryNotification } from '../utils/reportFormatter';
 import { updateDocumentDiagnostics } from '../utils/diagnosticMapper';
+import { ResultsPanel } from '../ui/results/resultsPanel';
+import { validateSelectionBounds } from '../ui/results/resultsProvider';
 import { getBackendUrl } from '../utils/configuration';
+
+export interface ReanalyzeSelectionParams {
+  documentUri: string;
+  startLine: number;
+  endLine: number;
+  displayFilename?: string;
+}
 
 /**
  * Command handler for "EdgeMind: Analyze Selection" (edgemind.analyzeSelection).
  * Reads the active editor's selected Python code snippet, performs client validation,
  * sends static analysis request to the EdgeMind backend, and presents results.
+ * Supports re-analysis without requiring active editor focus.
  */
 export async function analyzeSelection(
   apiClient: ApiClient,
   logger: Logger,
-  diagnosticCollection?: vscode.DiagnosticCollection
+  diagnosticCollection?: vscode.DiagnosticCollection,
+  extensionUri?: vscode.Uri,
+  reanalyzeParams?: ReanalyzeSelectionParams
 ): Promise<void> {
-  const editor = vscode.window.activeTextEditor;
+  let document: vscode.TextDocument;
+  let startLine: number;
+  let endLine: number;
+  let selectedText: string;
+  let hasSelection: boolean;
+  let selectionRange: vscode.Range | vscode.Selection | undefined;
 
-  if (!editor) {
-    vscode.window.showWarningMessage('No active editor found. Please open a Python file and select code to analyze.');
-    logger.warn('Analyze Selection invoked without an active editor.');
-    return;
+  if (reanalyzeParams) {
+    try {
+      const uri = vscode.Uri.parse(reanalyzeParams.documentUri);
+      document = await vscode.workspace.openTextDocument(uri);
+    } catch (err) {
+      logger.error(`Re-analysis failed: could not open document '${reanalyzeParams.documentUri}'`, err);
+      vscode.window.showErrorMessage(
+        'EdgeMind re-analysis failed: Could not open document. The file may have moved or been closed.'
+      );
+      return;
+    }
+
+    const boundsValidation = validateSelectionBounds(
+      reanalyzeParams.startLine,
+      reanalyzeParams.endLine,
+      document.lineCount
+    );
+
+    if (!boundsValidation.isValid || boundsValidation.effectiveEndLine === undefined) {
+      const errMsg = boundsValidation.error || 'Invalid selection line bounds.';
+      logger.warn(`Re-analysis bounds invalid: ${errMsg}`);
+      vscode.window.showErrorMessage(`EdgeMind re-analysis failed: ${errMsg}`);
+      return;
+    }
+
+    startLine = reanalyzeParams.startLine;
+    endLine = boundsValidation.effectiveEndLine;
+
+    const startPos = new vscode.Position(startLine - 1, 0);
+    const endLineObj = document.lineAt(endLine - 1);
+    selectionRange = new vscode.Range(startPos, endLineObj.range.end);
+    selectedText = document.getText(selectionRange);
+    hasSelection = selectedText.trim().length > 0;
+  } else {
+    const editor = vscode.window.activeTextEditor;
+
+    if (!editor) {
+      vscode.window.showWarningMessage('No active editor found. Please open a Python file and select code to analyze.');
+      logger.warn('Analyze Selection invoked without an active editor.');
+      return;
+    }
+
+    document = editor.document;
+    const selection = editor.selection;
+    selectionRange = selection;
+    hasSelection = !selection.isEmpty;
+    selectedText = hasSelection ? document.getText(selection) : '';
+    startLine = selection.start.line + 1; // 1-based
+    endLine = selection.end.line + 1;     // 1-based
   }
 
-  const selection = editor.selection;
-  const hasSelection = !selection.isEmpty;
-  const selectedText = hasSelection ? editor.document.getText(selection) : '';
-  const startLine = selection.start.line + 1; // 1-based
-  const endLine = selection.end.line + 1;     // 1-based
-
   const validation = validateEditorSelection(
-    editor.document.fileName,
-    editor.document.languageId,
+    document.fileName,
+    document.languageId,
     hasSelection,
     selectedText,
     startLine,
@@ -88,8 +144,43 @@ export async function analyzeSelection(
         const formattedReport = formatReportOutput(report, response.durationMs, validation.scopeLabel);
 
         // Update VS Code native Diagnostics for the selection range
-        if (diagnosticCollection && editor.document) {
-          updateDocumentDiagnostics(diagnosticCollection, editor.document, report, selection);
+        if (diagnosticCollection && document) {
+          updateDocumentDiagnostics(diagnosticCollection, document, report, selectionRange);
+        }
+
+        // Show/Update Interactive Results Webview Panel with selection context
+        if (extensionUri) {
+          ResultsPanel.render(
+            extensionUri,
+            logger,
+            report,
+            {
+              scope: 'selection',
+              documentUri: document.uri.toString(),
+              documentPath: document.fileName,
+              displayFilename: validation.displayFilename,
+              selectionStartLine: startLine,
+              selectionEndLine: endLine,
+              timestamp: new Date().toLocaleTimeString(),
+            },
+            () =>
+              analyzeSelection(apiClient, logger, diagnosticCollection, extensionUri, {
+                documentUri: document.uri.toString(),
+                startLine,
+                endLine,
+                displayFilename: validation.displayFilename,
+              }),
+            () => {
+              if (diagnosticCollection && document) {
+                updateDocumentDiagnostics(
+                  diagnosticCollection,
+                  document,
+                  { ...report, errors: [], warnings: [] },
+                  selectionRange
+                );
+              }
+            }
+          );
         }
 
         // Print full formatted report to EdgeMind OutputChannel
@@ -100,20 +191,47 @@ export async function analyzeSelection(
           `Errors=${report.total_errors}, Warnings=${report.total_warnings} (${response.durationMs}ms)`
         );
 
-        // Display summary notification
+        // Display summary notification with Interactive Results action
         const summary = formatSummaryNotification(report, validation.scopeLabel);
-        const actionButton = 'View Full Report';
+        const actionButton = 'View Results';
+        const outputChannelAction = 'Output Channel';
 
         let selectedAction: string | undefined;
         if (report.total_errors > 0) {
-          selectedAction = await vscode.window.showErrorMessage(summary, actionButton);
+          selectedAction = await vscode.window.showErrorMessage(summary, actionButton, outputChannelAction);
         } else if (report.total_warnings > 0) {
-          selectedAction = await vscode.window.showWarningMessage(summary, actionButton);
+          selectedAction = await vscode.window.showWarningMessage(summary, actionButton, outputChannelAction);
         } else {
-          selectedAction = await vscode.window.showInformationMessage(summary, actionButton);
+          selectedAction = await vscode.window.showInformationMessage(summary, actionButton, outputChannelAction);
         }
 
         if (selectedAction === actionButton) {
+          if (ResultsPanel.currentPanel) {
+            ResultsPanel.currentPanel.reveal();
+          } else if (extensionUri) {
+            ResultsPanel.render(
+              extensionUri,
+              logger,
+              report,
+              {
+                scope: 'selection',
+                documentUri: document.uri.toString(),
+                documentPath: document.fileName,
+                displayFilename: validation.displayFilename,
+                selectionStartLine: startLine,
+                selectionEndLine: endLine,
+                timestamp: new Date().toLocaleTimeString(),
+              },
+              () =>
+                analyzeSelection(apiClient, logger, diagnosticCollection, extensionUri, {
+                  documentUri: document.uri.toString(),
+                  startLine,
+                  endLine,
+                  displayFilename: validation.displayFilename,
+                })
+            );
+          }
+        } else if (selectedAction === outputChannelAction) {
           logger.show(true);
         }
       } else {

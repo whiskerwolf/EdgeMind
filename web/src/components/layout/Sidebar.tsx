@@ -77,11 +77,28 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle, className
       aria-label="Main Navigation"
     >
       {/* Brand Header */}
-      <div className="h-13 px-4 flex items-center justify-between border-b border-em-border-default">
+      <div
+        className={cn(
+          'h-[52px] flex items-center border-b border-em-border-default',
+          collapsed ? 'px-2 justify-between gap-1' : 'px-4 justify-between'
+        )}
+      >
         <div className="flex items-center gap-2.5 overflow-hidden">
           {/* Brand Emblem SVG */}
-          <div className="w-6 h-6 rounded bg-gradient-to-br from-em-accent-primary to-em-brand-indigo flex items-center justify-center shrink-0 shadow-sm">
-            <span className="font-bold text-[13px] text-em-canvas font-mono tracking-tighter">EM</span>
+          <div
+            className={cn(
+              'rounded bg-gradient-to-br from-em-accent-primary to-em-brand-indigo flex items-center justify-center shrink-0 shadow-sm',
+              collapsed ? 'w-5 h-5' : 'w-6 h-6'
+            )}
+          >
+            <span
+              className={cn(
+                'font-bold text-em-canvas font-mono tracking-tighter',
+                collapsed ? 'text-[10px]' : 'text-[13px]'
+              )}
+            >
+              EM
+            </span>
           </div>
           {!collapsed && (
             <div className="flex flex-col">
@@ -92,7 +109,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ collapsed, onToggle, className
         </div>
         <button
           onClick={onToggle}
-          className="p-1 text-em-text-dim hover:text-em-text-primary hover:bg-white/[0.06] rounded transition-colors"
+          className="p-1 text-em-text-dim hover:text-em-text-primary hover:bg-white/[0.06] rounded transition-colors shrink-0"
           title={collapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
           aria-label={collapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
         >
